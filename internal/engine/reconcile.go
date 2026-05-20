@@ -39,6 +39,9 @@ func Reconcile(in Inputs) Outputs {
 
 	for _, r := range in.Remote {
 		localPort := r.Port + in.Rules.LocalPortOffset
+		// TODO(M6+): 同一 remote.Port 在 IPv4 0.0.0.0 + IPv6 [::] 上各报一次时，会产出两条
+		// Snapshot 条目（desiredSet 已去重，forward 只启一次，但 UI 表格显示重复）。
+		// 修复方向：按 (ServerID, RemotePort) 聚合后取 BindAddr 优先级最高的一条。
 		own := in.LocalOccupied[localPort]
 		// 端口已经在跑 → 视为 forwarding，且占用就是自己 — 此时 LocalOccupied 标记可能不准，强制 BySelf。
 		alreadyRunning := in.CurrentForward[r.Port]

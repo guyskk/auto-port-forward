@@ -40,6 +40,10 @@ func (f *Forward) bindHost() string {
 // Run 启动 listener 并接受连接；ctx 取消时关闭 listener 并停止 accept。
 // Listen 失败 → Report("conflict", err) 并返回错误。
 // 函数阻塞直至 ctx 结束或 listener 出错。
+//
+// TODO(M6+): listen 失败的语义现在统一报 "conflict"，但实际包含两种本质不同情况：
+//   - 真冲突（EADDRINUSE）→ "conflict" 合理
+//   - 端口非法（>65535、<0、权限不够）→ 应分流到 "error"，避免误导用户以为有别的进程在占用
 func (f *Forward) Run(ctx context.Context, d Dialer) error {
 	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", f.bindHost(), f.LocalPort))
 	if err != nil {
