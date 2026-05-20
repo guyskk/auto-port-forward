@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"os"
 
 	"autoportforward/internal/config"
 	"autoportforward/internal/engine"
 	"autoportforward/internal/events"
 	"autoportforward/internal/model"
+	"autoportforward/internal/scan"
+	"autoportforward/internal/sshpool"
 )
 
 // App 是 Wails 绑定的门面，所有 Vue 调用都打到这些方法上。
@@ -20,12 +23,16 @@ type App struct {
 func NewApp() *App { return &App{} }
 
 // Startup 由 wails 在窗口就绪后调用。
-// TODO(M6): 读取 config → 构造 engine(emitter=wailsRuntime) → engine.StartAll(ctx)。
+// TODO(M6): 把 emitter 替换为 wails runtime.EventsEmit 适配器。
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
 	cfg, _ := config.Load("") // TODO(M6): config.DefaultPath()
 	a.cfg = cfg
-	a.engine = engine.New(cfg, events.NopEmitter{})
+	a.engine = engine.New(cfg, events.NopEmitter{}, engine.Deps{
+		ClientFactory: func(s config.Server) engine.ClientHandle { return sshpool.NewClient(s) },
+		LocalScan:     scan.ScanLocal,
+		IsRoot:        os.Geteuid() == 0,
+	})
 }
 
 // Shutdown 由 wails 在退出前调用。
@@ -93,7 +100,7 @@ func (a *App) StopAll() error {
 // ScanNow 立刻触发一次扫描。
 func (a *App) ScanNow() error {
 	if a.engine != nil {
-		return a.engine.ScanNow()
+		return a.engine.ScanNow(a.ctx)
 	}
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -127,12 +128,17 @@ func TestForward_reportsConflictWhenListenFails(t *testing.T) {
 func TestForward_dialFailureClosesClient(t *testing.T) {
 	localPort := freePort(t)
 	d := &mockDialer{failWith: errors.New("dial fail")}
-	var gotStatus string
+	var (
+		mu        sync.Mutex
+		gotStatus string
+	)
+	setStatus := func(s string) { mu.Lock(); gotStatus = s; mu.Unlock() }
+	readStatus := func() string { mu.Lock(); defer mu.Unlock(); return gotStatus }
 	f := &Forward{
 		RemotePort: 9527,
 		LocalPort:  localPort,
 		Bind:       "127.0.0.1",
-		Report: func(status string, err error) { gotStatus = status },
+		Report:     func(status string, err error) { setStatus(status) },
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -147,15 +153,23 @@ func TestForward_dialFailureClosesClient(t *testing.T) {
 	if err == nil {
 		t.Errorf("expected EOF/err on local conn when remote dial fails")
 	}
-	if gotStatus != "error" {
-		t.Errorf("status = %q, want error", gotStatus)
+	// 等 Report("error") 到达（与本 goroutine 异步）。
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if readStatus() == "error" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if readStatus() != "error" {
+		t.Errorf("status = %q, want error", readStatus())
 	}
 }
 
 func dialWithRetry(t *testing.T, host string, port int, timeout time.Duration) net.Conn {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	for time.Now().Before(deadline) {
 		c, err := net.Dial("tcp", addr)
 		if err == nil {
