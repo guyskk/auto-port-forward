@@ -3,6 +3,7 @@ package forward
 
 import (
 	"context"
+	"fmt"
 	"net"
 )
 
@@ -12,6 +13,7 @@ type Dialer interface {
 }
 
 // ReportFunc 上报状态变化（status、error）。
+// status 取 model.PortStatus 的字符串值，本包不直接依赖 model 包以避免循环导入。
 type ReportFunc func(status string, err error)
 
 // Forward 是一条转发的运行实例。
@@ -22,20 +24,54 @@ type Forward struct {
 	Report     ReportFunc
 }
 
-// Run 启动 listener 并接受连接；ctx 取消时关闭 listener 并停止 accept。
-// 该函数阻塞直至 ctx 结束或 listener 出错。
-// TODO(M4): net.Listen → accept loop → go f.handle(ctx, d, c)。
-// TODO(M4): listen 失败 → Report(conflict|conflict_priv, err) 并返回。
-func (f *Forward) Run(ctx context.Context, d Dialer) error {
-	_ = ctx
-	_ = d
-	return nil
+func (f *Forward) report(status string, err error) {
+	if f.Report != nil {
+		f.Report(status, err)
+	}
 }
 
-// handle 处理一个本地连接：cli.Dial 远端再 bridge。
-// TODO(M4): d.Dial(ctx, "127.0.0.1:RemotePort") → bridge。
+func (f *Forward) bindHost() string {
+	if f.Bind == "" {
+		return "127.0.0.1"
+	}
+	return f.Bind
+}
+
+// Run 启动 listener 并接受连接；ctx 取消时关闭 listener 并停止 accept。
+// Listen 失败 → Report("conflict", err) 并返回错误。
+// 函数阻塞直至 ctx 结束或 listener 出错。
+func (f *Forward) Run(ctx context.Context, d Dialer) error {
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", f.bindHost(), f.LocalPort))
+	if err != nil {
+		f.report("conflict", err)
+		return err
+	}
+	f.report("forwarding", nil)
+
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+	}()
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+		go f.handle(ctx, d, conn)
+	}
+}
+
+// handle 处理一个本地连接：d.Dial 远端再 bridge。
 func (f *Forward) handle(ctx context.Context, d Dialer, local net.Conn) {
-	_ = ctx
-	_ = d
-	_ = local
+	remote, err := d.Dial(ctx, fmt.Sprintf("127.0.0.1:%d", f.RemotePort))
+	if err != nil {
+		f.report("error", err)
+		_ = local.Close()
+		return
+	}
+	bridge(ctx, local, remote)
 }

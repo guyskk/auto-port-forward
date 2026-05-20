@@ -19,19 +19,26 @@ func DefaultBackoff() BackoffParams {
 }
 
 // NextDelay 返回第 attempt 次重连等待的时长（attempt 从 0 起算）。
-// 算法：Initial * 2^attempt，封顶 Max。纯函数，便于单测。
+// 算法：Initial * 2^attempt，封顶 Max。负数 attempt 当作 0。
 //
-// TODO(M4): 实现 — 单测覆盖 attempt=0 / 翻倍 / 封顶 / 负值兜底。
+// 该函数纯函数，无 I/O，便于单测。
 func NextDelay(p BackoffParams, attempt int) time.Duration {
-	_ = p
-	_ = attempt
-	return 0
+	if attempt < 0 {
+		attempt = 0
+	}
+	// 上限：先用左移检测溢出，超出 Max 直接返回 Max。
+	// 32 次翻倍 ≈ 5.7e10 倍 Initial，远超任何合理 Max。
+	if attempt > 32 {
+		return p.Max
+	}
+	d := p.Initial << uint(attempt)
+	if d <= 0 || d > p.Max {
+		return p.Max
+	}
+	return d
 }
 
 // IsDegraded 判断累计断开时长是否已经触发 degraded。
-// TODO(M4): 实现 — disconnected > p.Degraded。
 func IsDegraded(p BackoffParams, disconnected time.Duration) bool {
-	_ = p
-	_ = disconnected
-	return false
+	return disconnected > p.Degraded
 }
