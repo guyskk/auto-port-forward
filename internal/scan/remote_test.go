@@ -40,7 +40,7 @@ func contains(s, sub string) bool {
 
 func TestRemoteScanner_prefersSS(t *testing.T) {
 	ex := &fakeExecutor{bySubstr: map[string]execResult{
-		"ss -H -tlnp": {out: []byte(ssSampleBasic)},
+		"tlnp": {out: []byte(ssSampleBasic)},
 	}}
 	s := NewRemoteScanner()
 	ports, err := s.Scan(context.Background(), ex)
@@ -54,8 +54,8 @@ func TestRemoteScanner_prefersSS(t *testing.T) {
 
 func TestRemoteScanner_fallsBackToProc(t *testing.T) {
 	ex := &fakeExecutor{bySubstr: map[string]execResult{
-		"ss -H -tlnp": {err: errors.New("not installed")},
-		"ss -H -tln":  {err: errors.New("not installed")},
+		"tlnp":          {err: errors.New("not installed")},
+		"tln ":          {err: errors.New("not installed")},
 		"/proc/net/tcp": {out: []byte(procV4Sample + procV6Sample)},
 	}}
 	s := NewRemoteScanner()
@@ -87,8 +87,8 @@ func TestRemoteScanner_allMethodsFail(t *testing.T) {
 
 func TestRemoteScanner_cachesPreferredMethod(t *testing.T) {
 	ex := &fakeExecutor{bySubstr: map[string]execResult{
-		"ss -H -tlnp": {err: errors.New("perm")},
-		"ss -H -tln":  {out: []byte(ssSampleBasic)},
+		"tlnp": {err: errors.New("perm")},
+		"tln ": {out: []byte(ssSampleBasic)}, // 注意尾部空格避免匹配 "tlnp"
 	}}
 	s := NewRemoteScanner()
 	if _, err := s.Scan(context.Background(), ex); err != nil {

@@ -4,18 +4,20 @@
 package conflict
 
 import (
+	"strings"
+
 	"autoportforward/internal/config"
 	"autoportforward/internal/model"
 )
 
 // Input 是 Classify 的入参集合。
 type Input struct {
-	Remote        model.RemotePort
-	LocalPort     int
-	LocalOccupied bool   // 本地同号端口是否被占用
-	OccupiedBySelf bool  // 该占用是否就是本程序自己的 listen
-	IsRoot        bool   // 当前进程是否以 root 运行
-	Rules         config.Rules
+	Remote         model.RemotePort
+	LocalPort      int
+	LocalOccupied  bool // 本地同号端口是否被占用
+	OccupiedBySelf bool // 该占用是否就是本程序自己的 listen
+	IsRoot         bool // 当前进程是否以 root 运行
+	Rules          config.Rules
 }
 
 // Classify 返回端口应当被赋予的 PortStatus。优先级从高到低：
@@ -25,8 +27,47 @@ type Input struct {
 //  4. 默认                                                        → pending
 //
 // 注：StatusForwarding 由调用方在 Listen 成功后翻转，不在此处返回。
-// TODO(M3): 实现以上规则，本文件需有 conflict_test.go 完整覆盖。
 func Classify(in Input) model.PortStatus {
-	_ = in
+	if isExcluded(in) {
+		return model.StatusExcluded
+	}
+	if in.LocalPort > 0 && in.LocalPort < 1024 && !in.IsRoot {
+		return model.StatusConflictPriv
+	}
+	if in.LocalOccupied && !in.OccupiedBySelf {
+		return model.StatusConflict
+	}
 	return model.StatusPending
+}
+
+func isExcluded(in Input) bool {
+	for _, p := range in.Rules.ExcludePorts {
+		if p == in.LocalPort {
+			return true
+		}
+	}
+	for _, sp := range in.Rules.ExcludeRanges {
+		if in.LocalPort >= sp.Lo && in.LocalPort <= sp.Hi {
+			return true
+		}
+	}
+	if in.Rules.OnlyPublicBind && isLoopback(in.Remote.BindAddr) {
+		return true
+	}
+	return false
+}
+
+// isLoopback 判断 bind 地址是否为回环。
+// 接受 "::1" / "127.0.0.1" / "127.0.0.x" 等 127.0.0.0/8。
+func isLoopback(addr string) bool {
+	if addr == "" {
+		return false
+	}
+	if addr == "::1" {
+		return true
+	}
+	if strings.HasPrefix(addr, "127.") {
+		return true
+	}
+	return false
 }
