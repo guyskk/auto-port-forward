@@ -46,6 +46,7 @@ type Engine struct {
 
 	mu        sync.Mutex
 	running   bool
+	startCtx  context.Context
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 	servers   map[string]*serverState
@@ -62,6 +63,7 @@ type serverState struct {
 	client   ClientHandle
 	scanner  *scan.RemoteScanner
 	forwards map[int]*forwardHandle // remote port → handle
+	cancel   context.CancelFunc     // 关闭本 server 的 connectLoop
 }
 
 // forwardHandle 一条转发的运行句柄。
@@ -107,6 +109,7 @@ func (e *Engine) StartAll(ctx context.Context) error {
 		return errors.New("engine: ClientFactory is nil")
 	}
 	ctx, cancel := context.WithCancel(ctx)
+	e.startCtx = ctx
 	e.cancel = cancel
 	e.triggerCh = make(chan scanRequest, 8)
 	e.running = true
@@ -115,20 +118,28 @@ func (e *Engine) StartAll(ctx context.Context) error {
 		if !s.Enabled {
 			continue
 		}
-		st := &serverState{
-			cfg:      s,
-			client:   e.deps.ClientFactory(s),
-			scanner:  scan.NewRemoteScanner(),
-			forwards: map[int]*forwardHandle{},
-		}
-		e.servers[s.ID] = st
-		e.wg.Add(1)
-		go e.connectLoop(ctx, st)
+		e.spawnServer(ctx, s)
 	}
 
 	e.wg.Add(1)
 	go e.scheduleLoop(ctx)
 	return nil
+}
+
+// spawnServer 启动一个 server 的 connectLoop 并注册到 e.servers。
+// 必须在持有 e.mu 时调用。
+func (e *Engine) spawnServer(ctx context.Context, s config.Server) {
+	sctx, cancel := context.WithCancel(ctx)
+	st := &serverState{
+		cfg:      s,
+		client:   e.deps.ClientFactory(s),
+		scanner:  scan.NewRemoteScanner(),
+		forwards: map[int]*forwardHandle{},
+		cancel:   cancel,
+	}
+	e.servers[s.ID] = st
+	e.wg.Add(1)
+	go e.connectLoop(sctx, st)
 }
 
 // connectLoop 维护一个 server 的 ssh 连接。
@@ -170,6 +181,7 @@ func (e *Engine) StopAll() error {
 	}
 	e.running = false
 	cancel := e.cancel
+	e.startCtx = nil
 	servers := e.servers
 	e.servers = map[string]*serverState{}
 	e.mu.Unlock()
