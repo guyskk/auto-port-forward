@@ -76,6 +76,26 @@ const columns = computed<DataTableColumns<Server>>(() => [
       ),
   },
   {
+    title: zh.servers.columns.conn,
+    key: 'conn',
+    render: (r) => {
+      const s = store.serverStatus[r.id]
+      if (!s) {
+        return h(NTag, { type: 'default', size: 'small' }, () => zh.conn.unknown)
+      }
+      const typeMap = {
+        dialing: 'warning',
+        connected: 'success',
+        broken: 'error',
+        degraded: 'error',
+      } as const
+      const label = (zh.conn as Record<string, string>)[s.state] || s.state
+      const tag = h(NTag, { type: typeMap[s.state] || 'default', size: 'small' }, () => label)
+      if (s.state === 'connected' || !s.error) return tag
+      return h(NSpace, { size: 4 }, () => [tag, h('span', { style: 'color:#999;font-size:12px' }, s.error)])
+    },
+  },
+  {
     title: zh.servers.columns.action,
     key: 'action',
     render(row) {

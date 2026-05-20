@@ -31,9 +31,10 @@ const (
 type Client struct {
 	cfg config.Server
 
-	mu    sync.RWMutex
-	conn  *ssh.Client
-	state State
+	mu     sync.RWMutex
+	conn   *ssh.Client
+	state  State
+	doneCh chan struct{} // 关闭表示连接已断开（keepalive 失败 / Close）
 }
 
 // NewClient 构造，不立刻连接。
@@ -52,6 +53,7 @@ func (c *Client) Connect(ctx context.Context) error {
 		return nil
 	}
 	c.state = StateDialing
+	c.doneCh = make(chan struct{})
 	c.mu.Unlock()
 
 	auths, err := buildAuthMethods(c.cfg)
@@ -93,7 +95,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	return nil
 }
 
-// keepalive 每 30s 发一次 ssh keepalive；失败标记 broken。
+// keepalive 每 30s 发一次 ssh keepalive；失败标记 broken 并关闭连接。
 func (c *Client) keepalive() {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
@@ -107,7 +109,7 @@ func (c *Client) keepalive() {
 		_, _, err := conn.SendRequest("keepalive@autoportforward", true, nil)
 		if err != nil {
 			c.setState(StateBroken)
-			_ = c.Close()
+			_ = c.Close() // Close 会关闭 doneCh，唤醒 supervise
 			return
 		}
 	}
@@ -117,13 +119,29 @@ func (c *Client) keepalive() {
 func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.doneCh != nil {
+		select {
+		case <-c.doneCh:
+		default:
+			close(c.doneCh)
+		}
+	}
 	if c.conn == nil {
+		c.state = StateIdle
 		return nil
 	}
 	err := c.conn.Close()
 	c.conn = nil
 	c.state = StateIdle
 	return err
+}
+
+// Done 返回一个 channel：连接断开时关闭（keepalive 失败 / Close 调用）。
+// 调用 Connect 之前返回 nil — 调用者 select 中收到 nil channel 会永久阻塞。
+func (c *Client) Done() <-chan struct{} {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.doneCh
 }
 
 // Run 在远端执行命令并返回 stdout，实现 scan.Executor。

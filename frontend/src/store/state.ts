@@ -9,9 +9,10 @@ import { api, onEvent } from '../api/wails'
 import {
   EVENT_FORWARD_UPDATE,
   EVENT_SCAN_ERROR,
+  EVENT_SERVER_STATUS,
   EVENT_STATE_UPDATE,
 } from '../types'
-import type { Config, Forward, Server } from '../types'
+import type { Config, Forward, Server, ServerStatus } from '../types'
 
 export const useAppStore = defineStore('app', () => {
   const servers = ref<Server[]>([])
@@ -20,6 +21,7 @@ export const useAppStore = defineStore('app', () => {
   const loading = ref(false)
   const lastScanAt = ref<number | null>(null)
   const lastError = ref<string>('')
+  const serverStatus = ref<Record<string, ServerStatus>>({})
 
   async function refresh(): Promise<void> {
     loading.value = true
@@ -82,6 +84,12 @@ export const useAppStore = defineStore('app', () => {
       const d = data as { error?: string }
       lastError.value = d?.error || 'scan error'
     })
+    onEvent(EVENT_SERVER_STATUS, (data) => {
+      const s = data as ServerStatus
+      if (s?.server_id) {
+        serverStatus.value = { ...serverStatus.value, [s.server_id]: s }
+      }
+    })
   }
 
   return {
@@ -91,6 +99,7 @@ export const useAppStore = defineStore('app', () => {
     loading,
     lastScanAt,
     lastError,
+    serverStatus,
     refresh,
     scanNow,
     addServer,

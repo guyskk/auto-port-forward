@@ -59,6 +59,10 @@ func (f *fakeClient) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	return a, nil
 }
 
+// Done 返回 nil channel — 永久阻塞，模拟"连接保持"。
+// 测试不关心断开重连时直接用 fakeClient；需要触发断开请用 reconnectFakeClient。
+func (f *fakeClient) Done() <-chan struct{} { return nil }
+
 // reservePort 占住一个端口然后立刻释放，返回端口号。
 // 有理论竞态，仅测试用：随后另一进程占住该端口将让测试失败。
 func reservePort(t *testing.T) int {

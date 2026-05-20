@@ -19,6 +19,7 @@ import (
 	"autoportforward/internal/events"
 	"autoportforward/internal/model"
 	"autoportforward/internal/scan"
+	"autoportforward/internal/sshpool"
 )
 
 // ClientHandle 抽象 SSH 客户端的全部能力：连接、关闭、远端执行、远端 TCP 通道。
@@ -28,6 +29,9 @@ type ClientHandle interface {
 	Close() error
 	Run(ctx context.Context, cmd string) ([]byte, error)
 	Dial(ctx context.Context, addr string) (net.Conn, error)
+	// Done 返回一个 channel，连接断开（keepalive 失败 / Close 调用）时关闭。
+	// 未连接时可返回 nil — select 中 nil channel 永久阻塞，不会误触发重连。
+	Done() <-chan struct{}
 }
 
 // Deps 是 Engine 的注入依赖；测试与运行时各自构造。
@@ -36,6 +40,12 @@ type Deps struct {
 	LocalScan     func(ctx context.Context) ([]model.LocalPort, error)
 	Now           func() time.Time
 	IsRoot        bool
+
+	// Backoff 重连退避参数。零值用 sshpool.DefaultBackoff()。
+	Backoff sshpool.BackoffParams
+	// Sleep 是 connectLoop 用的可注入睡眠函数。测试可传 instant-return 版以避免实际等待。
+	// 零值用 ctx-aware 的 time.Sleep。返回 ctx.Err() 表示中断。
+	Sleep func(ctx context.Context, d time.Duration) error
 }
 
 // Engine 是顶层编排器，由 app.go 持有。
@@ -142,12 +152,84 @@ func (e *Engine) spawnServer(ctx context.Context, s config.Server) {
 	go e.connectLoop(sctx, st)
 }
 
-// connectLoop 维护一个 server 的 ssh 连接。
-// 当前实现仅在启动时连接一次；重连退避守护在 M8 接入。
+// connectLoop 维护一个 server 的 ssh 连接：失败按 backoff 重试、断开后自动重连、
+// 累计断开超过 Degraded 阈值时上报 degraded。
 func (e *Engine) connectLoop(ctx context.Context, st *serverState) {
 	defer e.wg.Done()
-	_ = st.client.Connect(ctx) // 失败不阻塞 — scan 时 Run 会失败并 emit scan:error
-	<-ctx.Done()
+	backoff := e.deps.Backoff
+	if backoff.Initial == 0 {
+		backoff = sshpool.DefaultBackoff()
+	}
+	sleep := e.deps.Sleep
+	if sleep == nil {
+		sleep = defaultSleep
+	}
+	now := e.deps.Now
+
+	attempt := 0
+	var downSince time.Time // 零值表示当前在线（或刚启动）
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		e.emitServerStatus(ctx, st.cfg.ID, "dialing", attempt, 0, "")
+		err := st.client.Connect(ctx)
+		if err == nil {
+			attempt = 0
+			downSince = time.Time{}
+			e.emitServerStatus(ctx, st.cfg.ID, "connected", 0, 0, "")
+			select {
+			case <-ctx.Done():
+				return
+			case <-st.client.Done():
+				downSince = now()
+				e.emitServerStatus(ctx, st.cfg.ID, "broken", 0, 0, "connection lost")
+				continue
+			}
+		}
+
+		if downSince.IsZero() {
+			downSince = now()
+		}
+		sinceDown := now().Sub(downSince)
+		state := "broken"
+		if sshpool.IsDegraded(backoff, sinceDown) {
+			state = "degraded"
+		}
+		e.emitServerStatus(ctx, st.cfg.ID, state, attempt, sinceDown.Milliseconds(), err.Error())
+
+		delay := sshpool.NextDelay(backoff, attempt)
+		attempt++
+		if err := sleep(ctx, delay); err != nil {
+			return
+		}
+	}
+}
+
+func defaultSleep(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// emitServerStatus 发出 EventServerStatus 事件。
+func (e *Engine) emitServerStatus(ctx context.Context, id, state string, attempt int, disconnectedMs int64, errMsg string) {
+	if e.emit == nil {
+		return
+	}
+	e.emit.Emit(ctx, events.EventServerStatus, events.ServerStatus{
+		ServerID:       id,
+		State:          state,
+		Attempt:        attempt,
+		DisconnectedMs: disconnectedMs,
+		Error:          errMsg,
+	})
 }
 
 // scheduleLoop 是定时扫描调度器：tick 或外部 trigger 触发 scanTick。

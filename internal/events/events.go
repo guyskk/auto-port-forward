@@ -12,6 +12,16 @@ const (
 	EventForwardUpdate = "forward:update"  // 单条转发状态变化
 )
 
+// ServerStatus 是 EventServerStatus 事件的 payload。
+// State 取值对齐 sshpool.State：dialing / connected / broken / degraded。
+type ServerStatus struct {
+	ServerID       string `json:"server_id"`
+	State          string `json:"state"`
+	Attempt        int    `json:"attempt"`
+	DisconnectedMs int64  `json:"disconnected_ms"`
+	Error          string `json:"error,omitempty"`
+}
+
 // Emitter 抽象事件发射器；wails 实现包装 runtime.EventsEmit。
 type Emitter interface {
 	Emit(ctx context.Context, name string, data any)

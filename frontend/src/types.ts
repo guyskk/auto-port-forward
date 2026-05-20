@@ -69,6 +69,16 @@ export interface Config {
   rules: Rules
 }
 
+export type ServerConnState = 'dialing' | 'connected' | 'broken' | 'degraded'
+
+export interface ServerStatus {
+  server_id: string
+  state: ServerConnState
+  attempt: number
+  disconnected_ms: number
+  error?: string
+}
+
 export const EVENT_STATE_UPDATE = 'state:update'
 export const EVENT_SERVER_STATUS = 'server:status'
 export const EVENT_SCAN_ERROR = 'scan:error'

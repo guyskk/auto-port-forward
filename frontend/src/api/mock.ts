@@ -2,8 +2,8 @@
 //
 // 仅用于在 vite dev 时让 UI 可以独立渲染、点击；wails dev 不走这里。
 
-import type { Config, Forward, Server } from '../types'
-import { EVENT_STATE_UPDATE } from '../types'
+import type { Config, Forward, Server, ServerStatus } from '../types'
+import { EVENT_SERVER_STATUS, EVENT_STATE_UPDATE } from '../types'
 
 type Listener = (data: unknown) => void
 const listeners = new Map<string, Set<Listener>>()
@@ -91,6 +91,7 @@ export const api = {
   async AddServer(s: Server) {
     const created = { ...s, id: s.id || `mock-${Date.now()}` }
     state.servers.push(created)
+    emitMockServerStatus(created.id, 'connected')
     return deepClone(created)
   },
   async UpdateServer(s: Server) {
@@ -114,7 +115,9 @@ export const api = {
   async UpdateScanInterval(sec: number) {
     state.scan_interval_sec = sec
   },
-  async StartAll() {},
+  async StartAll() {
+    state.servers.forEach((s) => emitMockServerStatus(s.id, 'connected'))
+  },
   async StopAll() {},
   async ScanNow() {
     snapshot = deepClone(seedForwards)
@@ -126,3 +129,18 @@ export const api = {
     return deepClone(snapshot)
   },
 }
+
+function emitMockServerStatus(id: string, statusState: ServerStatus['state']): void {
+  const payload: ServerStatus = {
+    server_id: id,
+    state: statusState,
+    attempt: 0,
+    disconnected_ms: 0,
+  }
+  emit(EVENT_SERVER_STATUS, payload)
+}
+
+// 初始化时把 seed servers 标为已连接，便于直接看到状态列。
+setTimeout(() => {
+  seedServers.forEach((s) => emitMockServerStatus(s.id, 'connected'))
+}, 50)
