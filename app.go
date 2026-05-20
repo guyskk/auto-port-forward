@@ -28,7 +28,8 @@ type App struct {
 
 // NewApp 构造未启动的 App。Startup 完成 store/engine 装配。
 func NewApp() *App {
-	return &App{emit: events.WailsEmitter{}}
+	// emit 在 Startup 时用 wails ctx 重建；这里先留 nil，setup 再赋值。
+	return &App{}
 }
 
 // Startup 由 wails 在窗口就绪后调用：加载配置 + 装配 engine。
@@ -52,7 +53,7 @@ func (a *App) setup(ctx context.Context, path string) error {
 	}
 	a.store = store
 	if a.emit == nil {
-		a.emit = events.WailsEmitter{}
+		a.emit = events.NewWailsEmitter(ctx)
 	}
 	a.engine = engine.New(store.Snapshot(), a.emit, engine.Deps{
 		ClientFactory: func(s config.Server) engine.ClientHandle { return sshpool.NewClient(s) },
