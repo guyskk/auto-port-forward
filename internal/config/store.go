@@ -1,19 +1,8 @@
 package config
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"errors"
-	"fmt"
 	"sync"
-	"time"
 )
-
-// ErrServerNotFound 在 UpdateServer/DeleteServer 找不到目标 ID 时返回。
-var ErrServerNotFound = errors.New("server not found")
-
-// ErrDuplicateServerID 在 AddServer 收到已存在的 ID 时返回。
-var ErrDuplicateServerID = errors.New("duplicate server id")
 
 // Store 管理一个 Config 文件的生命周期，所有 mutate 自动落盘。
 //
@@ -41,13 +30,6 @@ func (s *Store) Snapshot() Config {
 	return cloneConfig(s.cfg)
 }
 
-// Servers 返回服务器列表的拷贝。
-func (s *Store) Servers() []Server {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return cloneServers(s.cfg.Servers)
-}
-
 // Rules 返回规则的拷贝。
 func (s *Store) Rules() Rules {
 	s.mu.RLock()
@@ -55,82 +37,40 @@ func (s *Store) Rules() Rules {
 	return cloneRules(s.cfg.Rules)
 }
 
-// GetServer 按 ID 查找；ok=false 表示不存在。
-func (s *Store) GetServer(id string) (Server, bool) {
+// EnabledHosts 返回启用别名列表的拷贝。
+func (s *Store) EnabledHosts() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	for _, sv := range s.cfg.Servers {
-		if sv.ID == id {
-			return sv, true
-		}
-	}
-	return Server{}, false
+	return cloneStrings(s.cfg.EnabledHosts)
 }
 
-// AddServer 添加一个 server。ID 为空时自动生成；重复 ID 返回 ErrDuplicateServerID。
-// 操作完成后立刻持久化。
-func (s *Store) AddServer(in Server) (Server, error) {
+// SetHostEnabled 设置某 SSH 别名是否启用监控并持久化。
+//
+// on=true: 别名不在列表则追加（去重，幂等）。
+// on=false: 别名在列表则移除；不在则 no-op，不报错。
+//
+// 孤儿别名状态：本方法不查询 ssh config，只按字符串集合操作。
+// 如果用户在 ssh config 里移除某 host，再添加回来时启用状态会自动恢复。
+func (s *Store) SetHostEnabled(alias string, on bool) error {
 	s.mu.Lock()
-	if in.ID == "" {
-		in.ID = GenerateID()
+	hosts := append([]string(nil), s.cfg.EnabledHosts...)
+	found := -1
+	for i, h := range hosts {
+		if h == alias {
+			found = i
+			break
+		}
+	}
+	if on {
+		if found < 0 {
+			hosts = append(hosts, alias)
+		}
 	} else {
-		for _, sv := range s.cfg.Servers {
-			if sv.ID == in.ID {
-				s.mu.Unlock()
-				return Server{}, fmt.Errorf("%w: %s", ErrDuplicateServerID, in.ID)
-			}
+		if found >= 0 {
+			hosts = append(hosts[:found], hosts[found+1:]...)
 		}
 	}
-	if in.Port == 0 {
-		in.Port = 22
-	}
-	s.cfg.Servers = append(s.cfg.Servers, in)
-	cfg := cloneConfig(s.cfg)
-	s.mu.Unlock()
-	if err := Save(s.path, cfg); err != nil {
-		return Server{}, err
-	}
-	return in, nil
-}
-
-// UpdateServer 按 ID 替换；找不到返回 ErrServerNotFound。
-func (s *Store) UpdateServer(in Server) error {
-	s.mu.Lock()
-	idx := -1
-	for i, sv := range s.cfg.Servers {
-		if sv.ID == in.ID {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		s.mu.Unlock()
-		return fmt.Errorf("%w: %s", ErrServerNotFound, in.ID)
-	}
-	if in.Port == 0 {
-		in.Port = 22
-	}
-	s.cfg.Servers[idx] = in
-	cfg := cloneConfig(s.cfg)
-	s.mu.Unlock()
-	return Save(s.path, cfg)
-}
-
-// DeleteServer 按 ID 删除；找不到返回 ErrServerNotFound。
-func (s *Store) DeleteServer(id string) error {
-	s.mu.Lock()
-	idx := -1
-	for i, sv := range s.cfg.Servers {
-		if sv.ID == id {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		s.mu.Unlock()
-		return fmt.Errorf("%w: %s", ErrServerNotFound, id)
-	}
-	s.cfg.Servers = append(s.cfg.Servers[:idx], s.cfg.Servers[idx+1:]...)
+	s.cfg.EnabledHosts = hosts
 	cfg := cloneConfig(s.cfg)
 	s.mu.Unlock()
 	return Save(s.path, cfg)
@@ -157,29 +97,10 @@ func (s *Store) UpdateScanInterval(sec int) error {
 	return Save(s.path, cfg)
 }
 
-// GenerateID 生成一个时间戳 + 6 字节随机 hex 的服务器 ID，足够避免人工冲突。
-func GenerateID() string {
-	var buf [6]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		// 极少触发：rand.Reader 在所有支持平台都不会返回错误。
-		return fmt.Sprintf("srv-%d", time.Now().UnixNano())
-	}
-	return fmt.Sprintf("srv-%d-%s", time.Now().Unix(), hex.EncodeToString(buf[:]))
-}
-
 func cloneConfig(c Config) Config {
 	out := c
-	out.Servers = cloneServers(c.Servers)
 	out.Rules = cloneRules(c.Rules)
-	return out
-}
-
-func cloneServers(in []Server) []Server {
-	if in == nil {
-		return nil
-	}
-	out := make([]Server, len(in))
-	copy(out, in)
+	out.EnabledHosts = cloneStrings(c.EnabledHosts)
 	return out
 }
 
@@ -191,5 +112,14 @@ func cloneRules(r Rules) Rules {
 	if r.ExcludeRanges != nil {
 		out.ExcludeRanges = append([]Span(nil), r.ExcludeRanges...)
 	}
+	return out
+}
+
+func cloneStrings(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, len(in))
+	copy(out, in)
 	return out
 }
