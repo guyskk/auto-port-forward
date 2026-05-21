@@ -69,7 +69,7 @@ const modeTag = computed(() => (isWails() ? '原生' : 'Mock'))
           <n-layout>
             <n-layout-header bordered style="padding: 10px 18px">
               <n-space justify="space-between" align="center">
-                <n-text strong>autoportforward</n-text>
+                <n-text strong>auto-port-forward</n-text>
                 <n-space :size="8">
                   <n-tag :type="isWails() ? 'success' : 'warning'" size="small">{{ modeTag }}</n-tag>
                   <n-text depth="3" v-if="store.lastError">⚠️ {{ store.lastError }}</n-text>

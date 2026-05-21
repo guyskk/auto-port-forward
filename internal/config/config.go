@@ -131,11 +131,11 @@ func Save(path string, c Config) error {
 	return os.Rename(tmpName, path)
 }
 
-// DefaultPath 返回 $UserConfigDir/autoportforward/config.toml 的路径。
+// DefaultPath 返回 $UserConfigDir/auto-port-forward/config.toml 的路径。
 func DefaultPath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "autoportforward", "config.toml"), nil
+	return filepath.Join(dir, "auto-port-forward", "config.toml"), nil
 }

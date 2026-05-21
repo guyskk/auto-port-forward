@@ -8,7 +8,7 @@ import (
 	"context"
 	"errors"
 
-	"autoportforward/internal/model"
+	"auto-port-forward/internal/model"
 )
 
 // Executor 抽象 SSH 远端命令执行；engine 用 sshpool.Client 适配实现。

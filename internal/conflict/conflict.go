@@ -6,8 +6,8 @@ package conflict
 import (
 	"strings"
 
-	"autoportforward/internal/config"
-	"autoportforward/internal/model"
+	"auto-port-forward/internal/config"
+	"auto-port-forward/internal/model"
 )
 
 // Input 是 Classify 的入参集合。

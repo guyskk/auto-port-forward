@@ -5,8 +5,8 @@ import (
 	"sort"
 	"testing"
 
-	"autoportforward/internal/config"
-	"autoportforward/internal/model"
+	"auto-port-forward/internal/config"
+	"auto-port-forward/internal/model"
 )
 
 // 辅助：构造一个简单 RemotePort。

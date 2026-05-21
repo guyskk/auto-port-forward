@@ -1,4 +1,4 @@
-# autoportforward —— 最终实施方案
+# auto-port-forward —— 最终实施方案
 
 ## Context（为什么做）
 
@@ -21,8 +21,8 @@
 ## 整体架构
 
 ```
-autoportforward/
-├── go.mod                    # module autoportforward (go 1.25)
+auto-port-forward/
+├── go.mod                    # module auto-port-forward (go 1.25)
 ├── main.go                   # wails 入口, App 装配, 嵌入 frontend/dist
 ├── wails.json                # wails 项目配置
 ├── app.go                    # *App: Wails 绑定门面 (CRUD/扫描/启停/快照)
@@ -89,7 +89,7 @@ type Forward struct {
 }
 ```
 
-配置（TOML，`github.com/BurntSushi/toml`，原子写=临时文件+`os.Rename`），路径 `os.UserConfigDir()/autoportforward/config.toml`：
+配置（TOML，`github.com/BurntSushi/toml`，原子写=临时文件+`os.Rename`），路径 `os.UserConfigDir()/auto-port-forward/config.toml`：
 
 ```go
 type Config struct {
@@ -211,8 +211,8 @@ func (a *App) GetSnapshot() []model.Forward
 ```
 brew install go node
 go install github.com/wailsapp/wails/v2/cmd/wails@latest
-cd autoportforward && wails build -platform darwin/universal -clean
-# 产物: build/bin/autoportforward.app
+cd auto-port-forward && wails build -platform darwin/universal -clean
+# 产物: build/bin/auto-port-forward.app
 ```
 
 ## 分阶段里程碑（BPR 工作流）
@@ -231,11 +231,11 @@ cd autoportforward && wails build -platform darwin/universal -clean
 
 ## 关键文件路径速查
 
-- `/home/ubuntu/dev/autoportforward/internal/scan/remote_ss.go` — ss 解析（最关键）
-- `/home/ubuntu/dev/autoportforward/internal/scan/remote_proc.go` — proc 解析
-- `/home/ubuntu/dev/autoportforward/internal/conflict/conflict.go` — 冲突规则
-- `/home/ubuntu/dev/autoportforward/internal/engine/engine.go` — 编排
-- `/home/ubuntu/dev/autoportforward/internal/forward/forward.go` — 转发核心
+- `/home/ubuntu/dev/auto-port-forward/internal/scan/remote_ss.go` — ss 解析（最关键）
+- `/home/ubuntu/dev/auto-port-forward/internal/scan/remote_proc.go` — proc 解析
+- `/home/ubuntu/dev/auto-port-forward/internal/conflict/conflict.go` — 冲突规则
+- `/home/ubuntu/dev/auto-port-forward/internal/engine/engine.go` — 编排
+- `/home/ubuntu/dev/auto-port-forward/internal/forward/forward.go` — 转发核心
 - 参考移植源：loris `internal/forward/port_forward.go` 的 `bridge`/`makeAuthMethod`/`reconnectWithBackoff`/`monitorClientLifecycle`
 
 ## 风险与未知项
@@ -262,7 +262,7 @@ cd autoportforward && wails build -platform darwin/universal -clean
 1. `wails build -platform darwin/universal` 成功，产出 `.app`
 2. 打开 App，添加 `ubt` server（ssh-agent 认证），点扫描
 3. 表格出现远端端口列表；非冲突端口在 30 秒内变成绿色 `forwarding`
-4. `lsof -nP -iTCP -sTCP:LISTEN | grep autoportforward` 能看到对应本地监听
+4. `lsof -nP -iTCP -sTCP:LISTEN | grep auto-port-forward` 能看到对应本地监听
 5. `curl http://localhost:<被转发的端口>/` 能透过隧道访问远端服务
 6. 手工 `kill` 一个本地占用端口、再扫描，对应行从 `conflict` 变 `forwarding`
 7. 断开网络几秒再恢复，UI 显示 `degraded`→恢复，无需人为干预

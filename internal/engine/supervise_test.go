@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"autoportforward/internal/config"
-	"autoportforward/internal/events"
-	"autoportforward/internal/model"
-	"autoportforward/internal/sshpool"
+	"auto-port-forward/internal/config"
+	"auto-port-forward/internal/events"
+	"auto-port-forward/internal/model"
+	"auto-port-forward/internal/sshpool"
 )
 
 // 测试: 连接成功 → 上报 dialing → connected；attempt=0；DisconnectedMs=0。

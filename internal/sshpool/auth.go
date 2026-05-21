@@ -9,7 +9,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 
-	"autoportforward/internal/config"
+	"auto-port-forward/internal/config"
 )
 
 // ErrMissingAuth 表示没能构造出任何可用的 SSH 认证方法。

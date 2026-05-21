@@ -1,4 +1,4 @@
-module autoportforward
+module auto-port-forward
 
 go 1.25.7
 

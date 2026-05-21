@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"autoportforward/internal/config"
-	"autoportforward/internal/events"
+	"auto-port-forward/internal/config"
+	"auto-port-forward/internal/events"
 )
 
 func newTestApp() *App {

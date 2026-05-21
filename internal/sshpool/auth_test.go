@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"autoportforward/internal/config"
+	"auto-port-forward/internal/config"
 )
 
 func TestBuildAuthMethods_passwordMissing(t *testing.T) {

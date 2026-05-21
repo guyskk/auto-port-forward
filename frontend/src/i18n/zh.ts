@@ -1,6 +1,6 @@
 // i18n/zh.ts —— 中文文案常量，集中维护便于后续接 i18n。
 export const zh = {
-  appTitle: 'autoportforward',
+  appTitle: 'auto-port-forward',
   menu: {
     monitor: '端口监控',
     servers: '服务器',

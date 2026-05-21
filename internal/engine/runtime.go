@@ -4,9 +4,9 @@ import (
 	"context"
 	"sort"
 
-	"autoportforward/internal/events"
-	"autoportforward/internal/forward"
-	"autoportforward/internal/model"
+	"auto-port-forward/internal/events"
+	"auto-port-forward/internal/forward"
+	"auto-port-forward/internal/model"
 )
 
 // scanTick 执行一次扫描：对每个 server 扫描远端 → reconcile → 执行 diff → 写入 snapshot。

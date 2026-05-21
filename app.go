@@ -8,12 +8,12 @@ import (
 	"os"
 	"time"
 
-	"autoportforward/internal/config"
-	"autoportforward/internal/engine"
-	"autoportforward/internal/events"
-	"autoportforward/internal/model"
-	"autoportforward/internal/scan"
-	"autoportforward/internal/sshpool"
+	"auto-port-forward/internal/config"
+	"auto-port-forward/internal/engine"
+	"auto-port-forward/internal/events"
+	"auto-port-forward/internal/model"
+	"auto-port-forward/internal/scan"
+	"auto-port-forward/internal/sshpool"
 )
 
 // App 是 Wails 绑定的门面，所有 Vue 调用都打到这些方法上。

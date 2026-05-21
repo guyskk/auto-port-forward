@@ -5,7 +5,7 @@ import (
 	"errors"
 	"os/exec"
 
-	"autoportforward/internal/model"
+	"auto-port-forward/internal/model"
 )
 
 // ErrSonarNotFound 表示本机未安装 sonar。

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"autoportforward/internal/model"
+	"auto-port-forward/internal/model"
 )
 
 // usersRe 匹配 ss 的 `users:(("proc",pid=NNN,fd=NN), ...)` 段落中的首个进程名与 pid。

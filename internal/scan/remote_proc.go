@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"autoportforward/internal/model"
+	"auto-port-forward/internal/model"
 )
 
 // ParseProcNetTCP 解析 /proc/net/tcp (v6=false) 或 /proc/net/tcp6 (v6=true)。

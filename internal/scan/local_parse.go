@@ -3,7 +3,7 @@ package scan
 import (
 	"encoding/json"
 
-	"autoportforward/internal/model"
+	"auto-port-forward/internal/model"
 )
 
 // ParseSonarJSON 把 `sonar list --json` 的输出解码成 LocalPort 列表。

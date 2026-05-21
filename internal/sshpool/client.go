@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"autoportforward/internal/config"
+	"auto-port-forward/internal/config"
 )
 
 // State 表示池子里某 server 的连接状态。
@@ -106,7 +106,7 @@ func (c *Client) keepalive() {
 		if conn == nil {
 			return
 		}
-		_, _, err := conn.SendRequest("keepalive@autoportforward", true, nil)
+		_, _, err := conn.SendRequest("keepalive@auto-port-forward", true, nil)
 		if err != nil {
 			c.setState(StateBroken)
 			_ = c.Close() // Close 会关闭 doneCh，唤醒 supervise

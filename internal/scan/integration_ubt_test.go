@@ -5,7 +5,7 @@ import (
 	"os/exec"
 	"testing"
 
-	"autoportforward/internal/scan"
+	"auto-port-forward/internal/scan"
 )
 
 // sshExecutor 通过 ssh shell out 调用远端命令；仅集成测试用。

@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"autoportforward/internal/config"
-	"autoportforward/internal/sshpool"
+	"auto-port-forward/internal/config"
+	"auto-port-forward/internal/sshpool"
 )
 
 // resolveSSHConfig 调用 `ssh -G <host>` 解析有效配置。

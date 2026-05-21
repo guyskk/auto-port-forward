@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"autoportforward/internal/config"
-	"autoportforward/internal/forward"
-	"autoportforward/internal/sshpool"
+	"auto-port-forward/internal/config"
+	"auto-port-forward/internal/forward"
+	"auto-port-forward/internal/sshpool"
 )
 
 // 与 sshpool integration test 同样的 ssh -G 解析。

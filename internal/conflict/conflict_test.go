@@ -3,8 +3,8 @@ package conflict
 import (
 	"testing"
 
-	"autoportforward/internal/config"
-	"autoportforward/internal/model"
+	"auto-port-forward/internal/config"
+	"auto-port-forward/internal/model"
 )
 
 func base(rules config.Rules, in Input) Input {

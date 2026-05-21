@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"autoportforward/internal/config"
-	"autoportforward/internal/events"
-	"autoportforward/internal/model"
+	"auto-port-forward/internal/config"
+	"auto-port-forward/internal/events"
+	"auto-port-forward/internal/model"
 )
 
 // 测试: ApplyServers 在运行时添加新 server，启动它的 Connect。

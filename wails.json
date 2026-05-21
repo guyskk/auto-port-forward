@@ -1,14 +1,14 @@
 {
   "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "autoportforward",
-  "outputfilename": "autoportforward",
+  "name": "auto-port-forward",
+  "outputfilename": "auto-port-forward",
   "frontend:install": "npm install",
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "wailsjsdir": "./frontend",
   "author": {
-    "name": "autoportforward",
+    "name": "auto-port-forward",
     "email": ""
   }
 }

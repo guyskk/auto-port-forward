@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"autoportforward/internal/model"
+	"auto-port-forward/internal/model"
 )
 
 // fakeExecutor 按命令前缀路由到固定的响应或错误，供 Scan 测试使用。

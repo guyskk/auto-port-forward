@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"autoportforward/internal/config"
-	"autoportforward/internal/model"
+	"auto-port-forward/internal/config"
+	"auto-port-forward/internal/model"
 )
 
 // 测试 1: StartAll 连接所有 enabled server。

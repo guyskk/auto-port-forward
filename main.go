@@ -17,7 +17,7 @@ var assets embed.FS
 func main() {
 	app := NewApp()
 	err := wails.Run(&options.App{
-		Title:  "autoportforward",
+		Title:  "auto-port-forward",
 		Width:  1100,
 		Height: 720,
 		AssetServer: &assetserver.Options{

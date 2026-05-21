@@ -1,9 +1,9 @@
 package engine
 
 import (
-	"autoportforward/internal/conflict"
-	"autoportforward/internal/config"
-	"autoportforward/internal/model"
+	"auto-port-forward/internal/conflict"
+	"auto-port-forward/internal/config"
+	"auto-port-forward/internal/model"
 )
 
 // LocalOwnership 记录本地某端口的占用情况，由 engine 在调度前预计算。

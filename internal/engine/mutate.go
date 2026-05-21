@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"autoportforward/internal/config"
+	"auto-port-forward/internal/config"
 )
 
 // ToggleForward 临时强制启用 / 禁用某端口转发。
