@@ -18,8 +18,8 @@ func TestDefaultConfig_hasExpectedDefaults(t *testing.T) {
 	if len(wantExcludes) != 0 {
 		t.Errorf("missing default excludes: %v", wantExcludes)
 	}
-	if c.Rules.LocalPortOffset != 0 {
-		t.Errorf("LocalPortOffset = %d, want 0", c.Rules.LocalPortOffset)
+	if c.EnabledHosts != nil {
+		t.Errorf("EnabledHosts = %v, want nil", c.EnabledHosts)
 	}
 }
 
@@ -40,15 +40,11 @@ func TestSaveLoad_roundtrip(t *testing.T) {
 	path := filepath.Join(dir, "config.toml")
 	in := Config{
 		ScanIntervalSec: 7,
-		Servers: []Server{
-			{ID: "ubt", Name: "Lab", Host: "10.0.0.1", Port: 22, User: "ubuntu", AuthMethod: "ssh_agent", HostKey: "known_hosts", Enabled: true},
-		},
 		Rules: Rules{
-			ExcludePorts:    []int{22, 53},
-			ExcludeRanges:   []Span{{Lo: 9000, Hi: 9099}},
-			OnlyPublicBind:  true,
-			LocalPortOffset: 20000,
+			ExcludePorts:  []int{22, 53},
+			ExcludeRanges: []Span{{Lo: 9000, Hi: 9099}},
 		},
+		EnabledHosts: []string{"ubt", "prod-db"},
 	}
 	if err := Save(path, in); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -60,14 +56,14 @@ func TestSaveLoad_roundtrip(t *testing.T) {
 	if got.ScanIntervalSec != 7 {
 		t.Errorf("ScanIntervalSec = %d", got.ScanIntervalSec)
 	}
-	if len(got.Servers) != 1 || got.Servers[0].ID != "ubt" || got.Servers[0].Host != "10.0.0.1" {
-		t.Errorf("Servers roundtrip lost: %#v", got.Servers)
-	}
-	if !got.Rules.OnlyPublicBind || got.Rules.LocalPortOffset != 20000 {
-		t.Errorf("Rules roundtrip lost: %#v", got.Rules)
+	if len(got.Rules.ExcludePorts) != 2 || got.Rules.ExcludePorts[0] != 22 {
+		t.Errorf("ExcludePorts roundtrip lost: %#v", got.Rules.ExcludePorts)
 	}
 	if len(got.Rules.ExcludeRanges) != 1 || got.Rules.ExcludeRanges[0].Hi != 9099 {
 		t.Errorf("ExcludeRanges roundtrip lost: %#v", got.Rules.ExcludeRanges)
+	}
+	if len(got.EnabledHosts) != 2 || got.EnabledHosts[0] != "ubt" || got.EnabledHosts[1] != "prod-db" {
+		t.Errorf("EnabledHosts roundtrip lost: %#v", got.EnabledHosts)
 	}
 }
 
@@ -89,15 +85,8 @@ func TestSave_atomicTempFileIsCleaned(t *testing.T) {
 func TestLoad_fillsDefaultsForMissingFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	// 只写 servers 列表，缺 scan_interval_sec 与 rules。
-	min := `[[servers]]
-id = "a"
-host = "h"
-port = 22
-user = "u"
-auth_method = "ssh_agent"
-host_key = "known_hosts"
-enabled = true
+	// 只写 enabled_hosts，缺 scan_interval_sec 与 rules。
+	min := `enabled_hosts = ["a", "b"]
 `
 	if err := os.WriteFile(path, []byte(min), 0o600); err != nil {
 		t.Fatal(err)
@@ -111,6 +100,9 @@ enabled = true
 	}
 	if len(got.Rules.ExcludePorts) == 0 {
 		t.Errorf("ExcludePorts should have defaults")
+	}
+	if len(got.EnabledHosts) != 2 {
+		t.Errorf("EnabledHosts = %#v, want [a b]", got.EnabledHosts)
 	}
 }
 

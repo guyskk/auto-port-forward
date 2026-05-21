@@ -16,47 +16,31 @@ type Span struct {
 	Hi int `toml:"hi"`
 }
 
-// Server 表示一个 SSH 目标服务器配置。
-type Server struct {
-	ID         string `toml:"id"`
-	Name       string `toml:"name"`
-	Host       string `toml:"host"`
-	Port       int    `toml:"port"` // 默认 22
-	User       string `toml:"user"`
-	AuthMethod string `toml:"auth_method"` // password | ssh_key | ssh_agent
-	Password   string `toml:"password,omitempty"`
-	KeyPath    string `toml:"key_path,omitempty"`
-	Passphrase string `toml:"passphrase,omitempty"`
-	HostKey    string `toml:"host_key"` // known_hosts | insecure
-	Enabled    bool   `toml:"enabled"`
-}
-
-// Rules 控制转发筛选和本地映射策略。
+// Rules 控制扫描端口的筛选策略。
 type Rules struct {
-	ExcludePorts    []int  `toml:"exclude_ports"`
-	ExcludeRanges   []Span `toml:"exclude_ranges"`
-	OnlyPublicBind  bool   `toml:"only_public_bind"`
-	LocalPortOffset int    `toml:"local_port_offset"`
+	ExcludePorts  []int  `toml:"exclude_ports"`
+	ExcludeRanges []Span `toml:"exclude_ranges"`
 }
 
 // Config 是顶层配置结构。
+//
+// EnabledHosts 是启用监控的 SSH config 别名集合：
+// 即使该别名当前已从 ssh config 移除，也保留状态，同名再现时自动恢复。
 type Config struct {
 	ScanIntervalSec int      `toml:"scan_interval_sec"`
-	Servers         []Server `toml:"servers"`
 	Rules           Rules    `toml:"rules"`
+	EnabledHosts    []string `toml:"enabled_hosts"`
 }
 
 // DefaultConfig 返回带默认值的 Config。
 func DefaultConfig() Config {
 	return Config{
 		ScanIntervalSec: 15,
-		Servers:         nil,
 		Rules: Rules{
-			ExcludePorts:    []int{22, 53, 80, 443, 111, 631},
-			ExcludeRanges:   nil,
-			OnlyPublicBind:  false,
-			LocalPortOffset: 0,
+			ExcludePorts:  []int{22, 53, 80, 443, 111, 631},
+			ExcludeRanges: nil,
 		},
+		EnabledHosts: nil,
 	}
 }
 
@@ -81,7 +65,6 @@ func Load(path string) (Config, error) {
 	return c, nil
 }
 
-// applyDefaults 用 DefaultConfig 的值填充零值字段，仅在 Load 后调用。
 func applyDefaults(c *Config) {
 	def := DefaultConfig()
 	if c.ScanIntervalSec == 0 {
@@ -89,11 +72,6 @@ func applyDefaults(c *Config) {
 	}
 	if c.Rules.ExcludePorts == nil {
 		c.Rules.ExcludePorts = def.Rules.ExcludePorts
-	}
-	for i := range c.Servers {
-		if c.Servers[i].Port == 0 {
-			c.Servers[i].Port = 22
-		}
 	}
 }
 

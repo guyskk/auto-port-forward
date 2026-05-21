@@ -27,7 +27,6 @@ const router = useRouter()
 
 const menuOptions = [
   { label: zh.menu.monitor, key: 'monitor' },
-  { label: zh.menu.servers, key: 'servers' },
   { label: zh.menu.settings, key: 'settings' },
 ]
 

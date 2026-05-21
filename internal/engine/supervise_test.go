@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"errors"
-	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,14 +11,15 @@ import (
 	"auto-port-forward/internal/config"
 	"auto-port-forward/internal/events"
 	"auto-port-forward/internal/model"
-	"auto-port-forward/internal/sshpool"
+	"auto-port-forward/internal/sshcfg"
+	"auto-port-forward/internal/sshctl"
 )
 
 // 测试: 连接成功 → 上报 dialing → connected；attempt=0；DisconnectedMs=0。
 func TestSupervise_connectSuccessEmitsConnected(t *testing.T) {
 	fc := newReconnectFakeClient()
 	spy := newEmitSpy()
-	eng := newSuperviseEngine(t, fc, spy, sshpool.DefaultBackoff(), nil)
+	eng := newSuperviseEngine(t, fc, spy, sshctl.DefaultBackoff(), nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -46,7 +46,7 @@ func TestSupervise_retryAfterFailure(t *testing.T) {
 
 	spy := newEmitSpy()
 	sleeps := newSleepRecorder()
-	eng := newSuperviseEngine(t, fc, spy, sshpool.BackoffParams{
+	eng := newSuperviseEngine(t, fc, spy, sshctl.BackoffParams{
 		Initial: 500 * time.Millisecond, Max: 60 * time.Second, Degraded: 15 * time.Minute,
 	}, sleeps.sleep)
 
@@ -77,7 +77,7 @@ func TestSupervise_retryAfterFailure(t *testing.T) {
 func TestSupervise_reconnectAfterDisconnect(t *testing.T) {
 	fc := newReconnectFakeClient()
 	spy := newEmitSpy()
-	eng := newSuperviseEngine(t, fc, spy, sshpool.DefaultBackoff(), nil)
+	eng := newSuperviseEngine(t, fc, spy, sshctl.DefaultBackoff(), nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -105,7 +105,7 @@ func TestSupervise_degradedAfterLongDisconnect(t *testing.T) {
 
 	spy := newEmitSpy()
 	// 把 Degraded 设得很短 — 50ms，便于在测试时长内推进到 degraded。
-	backoff := sshpool.BackoffParams{
+	backoff := sshctl.BackoffParams{
 		Initial:  1 * time.Millisecond,
 		Max:      5 * time.Millisecond,
 		Degraded: 50 * time.Millisecond,
@@ -173,8 +173,12 @@ func (f *reconnectFakeClient) Run(ctx context.Context, cmd string) ([]byte, erro
 	return nil, nil
 }
 
-func (f *reconnectFakeClient) Dial(ctx context.Context, addr string) (net.Conn, error) {
-	return nil, errors.New("not implemented")
+func (f *reconnectFakeClient) AddForward(ctx context.Context, port int) error {
+	return nil
+}
+
+func (f *reconnectFakeClient) CancelForward(ctx context.Context, port int) error {
+	return nil
 }
 
 func (f *reconnectFakeClient) Done() <-chan struct{} {
@@ -194,9 +198,9 @@ func (f *reconnectFakeClient) signalDone() {
 
 // emitSpy 收集所有 ServerStatus 事件，可按 server / state 查询。
 type emitSpy struct {
-	mu       sync.Mutex
-	events   []events.ServerStatus
-	signal   chan struct{}
+	mu     sync.Mutex
+	events []events.ServerStatus
+	signal chan struct{}
 }
 
 func newEmitSpy() *emitSpy {
@@ -317,19 +321,19 @@ func newSuperviseEngine(
 	t *testing.T,
 	fc *reconnectFakeClient,
 	emit events.Emitter,
-	backoff sshpool.BackoffParams,
+	backoff sshctl.BackoffParams,
 	sleep func(ctx context.Context, d time.Duration) error,
 ) *Engine {
 	t.Helper()
-	cfg := config.Config{
-		ScanIntervalSec: 3600,
-		Servers:         []config.Server{{ID: "s1", Host: "h", Enabled: true}},
-	}
-	return New(cfg, emit, Deps{
-		ClientFactory: func(s config.Server) ClientHandle { return fc },
+	cfg := config.Config{ScanIntervalSec: 3600}
+	e := New(cfg, emit, Deps{
+		ClientFactory: func(h sshcfg.Host) ClientHandle { return fc },
 		LocalScan:     func(ctx context.Context) ([]model.LocalPort, error) { return nil, nil },
 		IsRoot:        true,
 		Backoff:       backoff,
 		Sleep:         sleep,
 	})
+	// 注入一个 enabled host。
+	_ = e.ApplyServers([]sshcfg.Host{{Alias: "s1", HostName: "h", User: "u", Port: 22}})
+	return e
 }
