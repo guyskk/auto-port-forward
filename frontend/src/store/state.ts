@@ -1,6 +1,6 @@
 // store/state.ts —— Pinia 全局状态。
 //
-// useAppStore() 暴露 servers / forwards / config / loading；
+// useAppStore() 暴露 hosts / enabledHosts / forwards / config / serverStatus；
 // initAppStore() 在 App 挂载时跑一次：拉初始数据、订阅 wails events。
 
 import { defineStore } from 'pinia'
@@ -12,10 +12,11 @@ import {
   EVENT_SERVER_STATUS,
   EVENT_STATE_UPDATE,
 } from '../types'
-import type { Config, Forward, Server, ServerStatus } from '../types'
+import type { Config, Forward, Host, ServerStatus } from '../types'
 
 export const useAppStore = defineStore('app', () => {
-  const servers = ref<Server[]>([])
+  const hosts = ref<Host[]>([])
+  const enabledHosts = ref<string[]>([])
   const forwards = ref<Forward[]>([])
   const config = ref<Config | null>(null)
   const loading = ref(false)
@@ -26,14 +27,16 @@ export const useAppStore = defineStore('app', () => {
   async function refresh(): Promise<void> {
     loading.value = true
     try {
-      const [cfg, snap, list] = await Promise.all([
+      const [cfg, snap, hostList, enabled] = await Promise.all([
         api.GetConfig(),
         api.GetSnapshot(),
-        api.ListServers(),
+        api.ListHosts(),
+        api.EnabledHosts(),
       ])
       config.value = cfg
       forwards.value = snap
-      servers.value = list
+      hosts.value = hostList
+      enabledHosts.value = enabled
     } finally {
       loading.value = false
     }
@@ -45,20 +48,22 @@ export const useAppStore = defineStore('app', () => {
     forwards.value = await api.GetSnapshot()
   }
 
-  async function addServer(s: Server): Promise<Server> {
-    const created = await api.AddServer(s)
-    servers.value = await api.ListServers()
-    return created
+  async function setHostEnabled(alias: string, on: boolean): Promise<void> {
+    await api.SetHostEnabled(alias, on)
+    enabledHosts.value = await api.EnabledHosts()
+    // 关闭某 host 后，立刻清掉它的 forward 行；开启则等下一次扫描自然填充。
+    if (!on) {
+      forwards.value = forwards.value.filter((f) => f.server_id !== alias)
+    }
   }
 
-  async function updateServer(s: Server): Promise<void> {
-    await api.UpdateServer(s)
-    servers.value = await api.ListServers()
+  async function reloadSSHConfig(): Promise<void> {
+    await api.ReloadSSHConfig()
+    hosts.value = await api.ListHosts()
   }
 
-  async function deleteServer(id: string): Promise<void> {
-    await api.DeleteServer(id)
-    servers.value = await api.ListServers()
+  async function testHost(alias: string): Promise<void> {
+    await api.TestHost(alias)
   }
 
   async function updateRules(r: Config['rules']): Promise<void> {
@@ -93,7 +98,8 @@ export const useAppStore = defineStore('app', () => {
   }
 
   return {
-    servers,
+    hosts,
+    enabledHosts,
     forwards,
     config,
     loading,
@@ -102,9 +108,9 @@ export const useAppStore = defineStore('app', () => {
     serverStatus,
     refresh,
     scanNow,
-    addServer,
-    updateServer,
-    deleteServer,
+    setHostEnabled,
+    reloadSSHConfig,
+    testHost,
     updateRules,
     updateScanInterval,
     subscribe,

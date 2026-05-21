@@ -4,18 +4,23 @@
 // 在 vite dev (浏览器直开 http://localhost:5173) 时降级到 mock 数据，
 // 便于在 Linux miniubt 上独立验收 UI。
 
-import type { Config, Forward, Server } from '../types'
+import type { Config, Forward, Host } from '../types'
 import * as mock from './mock'
 
 interface WailsBindings {
-  ListServers(): Promise<Server[]>
-  AddServer(s: Server): Promise<Server>
-  UpdateServer(s: Server): Promise<void>
-  DeleteServer(id: string): Promise<void>
-  TestServer(id: string): Promise<void>
+  // host 模型 — 替代旧的 server CRUD
+  ListHosts(): Promise<Host[]>
+  EnabledHosts(): Promise<string[]>
+  SetHostEnabled(alias: string, on: boolean): Promise<void>
+  ReloadSSHConfig(): Promise<void>
+  TestHost(alias: string): Promise<void>
+
+  // 配置
   GetConfig(): Promise<Config>
   UpdateRules(r: Config['rules']): Promise<void>
   UpdateScanInterval(sec: number): Promise<void>
+
+  // 运行控制
   StartAll(): Promise<void>
   StopAll(): Promise<void>
   ScanNow(): Promise<void>
@@ -47,11 +52,11 @@ function backend(): WailsBindings {
 }
 
 export const api: WailsBindings = {
-  ListServers: () => backend().ListServers(),
-  AddServer: (s) => backend().AddServer(s),
-  UpdateServer: (s) => backend().UpdateServer(s),
-  DeleteServer: (id) => backend().DeleteServer(id),
-  TestServer: (id) => backend().TestServer(id),
+  ListHosts: () => backend().ListHosts(),
+  EnabledHosts: () => backend().EnabledHosts(),
+  SetHostEnabled: (alias, on) => backend().SetHostEnabled(alias, on),
+  ReloadSSHConfig: () => backend().ReloadSSHConfig(),
+  TestHost: (alias) => backend().TestHost(alias),
   GetConfig: () => backend().GetConfig(),
   UpdateRules: (r) => backend().UpdateRules(r),
   UpdateScanInterval: (sec) => backend().UpdateScanInterval(sec),

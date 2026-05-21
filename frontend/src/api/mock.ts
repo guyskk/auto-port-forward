@@ -2,8 +2,8 @@
 //
 // 仅用于在 vite dev 时让 UI 可以独立渲染、点击；wails dev 不走这里。
 
-import type { Config, Forward, Server, ServerStatus } from '../types'
-import { EVENT_SERVER_STATUS, EVENT_STATE_UPDATE } from '../types'
+import type { Config, Forward, Host, ServerStatus } from '../types'
+import { EVENT_FORWARD_UPDATE, EVENT_SERVER_STATUS, EVENT_STATE_UPDATE } from '../types'
 
 type Listener = (data: unknown) => void
 const listeners = new Map<string, Set<Listener>>()
@@ -18,33 +18,25 @@ export function onEvent(name: string, cb: Listener): () => void {
   return () => listeners.get(name)?.delete(cb)
 }
 
-const seedServers: Server[] = [
-  {
-    id: 'mock-ubt',
-    name: 'ubt (mock)',
-    host: '10.0.0.42',
-    port: 22,
-    user: 'ubuntu',
-    auth_method: 'ssh_agent',
-    host_key: 'known_hosts',
-    enabled: true,
-  },
+// 模拟 ssh config 里有 3 个具体别名。
+const seedHosts: Host[] = [
+  { alias: 'ubt', host_name: '10.0.0.42', user: 'ubuntu', port: 22 },
+  { alias: 'prod-db', host_name: 'db.example.com', user: 'root', port: 2222 },
+  { alias: 'stage-edge', host_name: 'edge.example.com', user: 'admin', port: 22 },
 ]
 
-let state: Config = {
+let cfg: Config = {
   scan_interval_sec: 15,
-  servers: [...seedServers],
   rules: {
     exclude_ports: [22, 53, 80, 443, 111, 631],
     exclude_ranges: [],
-    only_public_bind: false,
-    local_port_offset: 0,
   },
+  enabled_hosts: ['ubt'], // 默认仅启用 ubt 一个
 }
 
 const seedForwards: Forward[] = [
   {
-    server_id: 'mock-ubt',
+    server_id: 'ubt',
     remote_port: 9527,
     local_port: 9527,
     status: 'forwarding',
@@ -52,7 +44,7 @@ const seedForwards: Forward[] = [
     remote: { port: 9527, bind_addr: '0.0.0.0', ip_version: 'IPv4', pid: 1024, process: 'tabby', command: 'tabby agent', docker_image: '' },
   },
   {
-    server_id: 'mock-ubt',
+    server_id: 'ubt',
     remote_port: 3000,
     local_port: 3000,
     status: 'pending',
@@ -60,7 +52,7 @@ const seedForwards: Forward[] = [
     remote: { port: 3000, bind_addr: '0.0.0.0', ip_version: 'IPv4', pid: 2048, process: 'node', command: 'node server.js', docker_image: '' },
   },
   {
-    server_id: 'mock-ubt',
+    server_id: 'ubt',
     remote_port: 8080,
     local_port: 8080,
     status: 'conflict',
@@ -69,7 +61,7 @@ const seedForwards: Forward[] = [
     remote: { port: 8080, bind_addr: '0.0.0.0', ip_version: 'IPv4', pid: 4096, process: 'caddy', command: 'caddy', docker_image: 'caddy:2.7' },
   },
   {
-    server_id: 'mock-ubt',
+    server_id: 'ubt',
     remote_port: 80,
     local_port: 80,
     status: 'conflict_priv',
@@ -85,42 +77,48 @@ function deepClone<T>(x: T): T {
 let snapshot: Forward[] = deepClone(seedForwards)
 
 export const api = {
-  async ListServers() {
-    return deepClone(state.servers)
+  async ListHosts() {
+    return deepClone(seedHosts)
   },
-  async AddServer(s: Server) {
-    const created = { ...s, id: s.id || `mock-${Date.now()}` }
-    state.servers.push(created)
-    emitMockServerStatus(created.id, 'connected')
-    return deepClone(created)
+  async EnabledHosts() {
+    return [...cfg.enabled_hosts]
   },
-  async UpdateServer(s: Server) {
-    const i = state.servers.findIndex((x) => x.id === s.id)
-    if (i >= 0) state.servers[i] = { ...s }
+  async SetHostEnabled(alias: string, on: boolean) {
+    const has = cfg.enabled_hosts.includes(alias)
+    if (on && !has) cfg.enabled_hosts = [...cfg.enabled_hosts, alias]
+    if (!on && has) cfg.enabled_hosts = cfg.enabled_hosts.filter((a) => a !== alias)
+    if (on) {
+      emitMockServerStatus(alias, 'connected')
+      // 让 mock 监控页能立刻看到端口
+      snapshot = deepClone(seedForwards).filter((f) => cfg.enabled_hosts.includes(f.server_id))
+      emit(EVENT_STATE_UPDATE, deepClone(snapshot))
+    } else {
+      snapshot = snapshot.filter((f) => f.server_id !== alias)
+      emit(EVENT_FORWARD_UPDATE, { server_id: alias })
+    }
   },
-  async DeleteServer(id: string) {
-    state.servers = state.servers.filter((x) => x.id !== id)
+  async ReloadSSHConfig() {
+    // mock：no-op，host 列表本就来自 seedHosts。
   },
-  async TestServer(id: string) {
-    const s = state.servers.find((x) => x.id === id)
-    if (!s) throw new Error('server not found')
+  async TestHost(alias: string) {
+    if (!seedHosts.some((h) => h.alias === alias)) throw new Error('host not found')
     await new Promise((r) => setTimeout(r, 200))
   },
   async GetConfig() {
-    return deepClone(state)
+    return deepClone(cfg)
   },
   async UpdateRules(r: Config['rules']) {
-    state.rules = { ...r }
+    cfg.rules = deepClone(r)
   },
   async UpdateScanInterval(sec: number) {
-    state.scan_interval_sec = sec
+    cfg.scan_interval_sec = sec
   },
   async StartAll() {
-    state.servers.forEach((s) => emitMockServerStatus(s.id, 'connected'))
+    cfg.enabled_hosts.forEach((a) => emitMockServerStatus(a, 'connected'))
   },
   async StopAll() {},
   async ScanNow() {
-    snapshot = deepClone(seedForwards)
+    snapshot = deepClone(seedForwards).filter((f) => cfg.enabled_hosts.includes(f.server_id))
     snapshot.forEach((f) => (f.last_active = Math.floor(Date.now() / 1000)))
     emit(EVENT_STATE_UPDATE, deepClone(snapshot))
   },
@@ -140,7 +138,7 @@ function emitMockServerStatus(id: string, statusState: ServerStatus['state']): v
   emit(EVENT_SERVER_STATUS, payload)
 }
 
-// 初始化时把 seed servers 标为已连接，便于直接看到状态列。
+// 初始化时把启用的 host 标为已连接。
 setTimeout(() => {
-  seedServers.forEach((s) => emitMockServerStatus(s.id, 'connected'))
+  cfg.enabled_hosts.forEach((a) => emitMockServerStatus(a, 'connected'))
 }, 50)
