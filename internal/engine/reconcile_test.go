@@ -115,6 +115,58 @@ func TestReconcile_diffComputesAddDel(t *testing.T) {
 	}
 }
 
+func TestReconcile_dedupSamePortIPv4AndIPv6(t *testing.T) {
+	// 同一端口同时在 IPv4 0.0.0.0 与 IPv6 [::] 监听：扫描会各报一条，
+	// Snapshot 应聚合为一条，取 BindAddr 优先级最高者（0.0.0.0）。
+	out := Reconcile(Inputs{
+		ServerID: "ubt",
+		Remote: []model.RemotePort{
+			{Port: 8080, BindAddr: "::", IPVersion: "IPv6"},
+			{Port: 8080, BindAddr: "0.0.0.0", IPVersion: "IPv4"},
+		},
+	})
+	if len(out.Snapshot) != 1 {
+		t.Fatalf("snapshot len = %d, want 1: %#v", len(out.Snapshot), out.Snapshot)
+	}
+	if out.Snapshot[0].Remote.BindAddr != "0.0.0.0" {
+		t.Errorf("chosen bind = %q, want 0.0.0.0", out.Snapshot[0].Remote.BindAddr)
+	}
+	if !reflect.DeepEqual(out.DesiredPorts, []int{8080}) {
+		t.Errorf("desired = %v, want [8080]", out.DesiredPorts)
+	}
+}
+
+func TestReconcile_dedupKeepsDistinctPorts(t *testing.T) {
+	// 不同端口不应被合并。
+	out := Reconcile(Inputs{
+		ServerID: "ubt",
+		Remote: []model.RemotePort{
+			rp(8080, "0.0.0.0"),
+			rp(9090, "0.0.0.0"),
+		},
+	})
+	if len(out.Snapshot) != 2 {
+		t.Fatalf("snapshot len = %d, want 2", len(out.Snapshot))
+	}
+}
+
+func TestReconcile_dedupPrefersWildcardOverLoopback(t *testing.T) {
+	// 同端口 127.0.0.1 + 0.0.0.0：取 0.0.0.0（可对外）。
+	out := Reconcile(Inputs{
+		ServerID: "ubt",
+		Remote: []model.RemotePort{
+			{Port: 3000, BindAddr: "127.0.0.1", IPVersion: "IPv4"},
+			{Port: 3000, BindAddr: "0.0.0.0", IPVersion: "IPv4"},
+		},
+	})
+	if len(out.Snapshot) != 1 {
+		t.Fatalf("snapshot len = %d, want 1", len(out.Snapshot))
+	}
+	if out.Snapshot[0].Remote.BindAddr != "0.0.0.0" {
+		t.Errorf("chosen bind = %q, want 0.0.0.0", out.Snapshot[0].Remote.BindAddr)
+	}
+}
+
 func TestReconcile_privilegedConflictNonRoot(t *testing.T) {
 	out := Reconcile(Inputs{
 		ServerID: "ubt",

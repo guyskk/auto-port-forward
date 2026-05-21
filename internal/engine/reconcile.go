@@ -39,11 +39,8 @@ func Reconcile(in Inputs) Outputs {
 	out := Outputs{}
 	desiredSet := make(map[int]struct{})
 
-	for _, r := range in.Remote {
+	for _, r := range dedupRemote(in.Remote) {
 		localPort := r.Port
-		// TODO(M6+): 同一 remote.Port 在 IPv4 0.0.0.0 + IPv6 [::] 上各报一次时，会产出两条
-		// Snapshot 条目（desiredSet 已去重，forward 只启一次，但 UI 表格显示重复）。
-		// 修复方向：按 (ServerID, RemotePort) 聚合后取 BindAddr 优先级最高的一条。
 		own := in.LocalOccupied[localPort]
 		// 端口已经在跑 → 视为 forwarding，且占用就是自己 — 此时 LocalOccupied 标记可能不准，强制 BySelf。
 		alreadyRunning := in.CurrentForward[r.Port]
@@ -77,6 +74,46 @@ func Reconcile(in Inputs) Outputs {
 	current := keysAsSlice(in.CurrentForward)
 	out.Diff = Diff(current, out.DesiredPorts)
 	return out
+}
+
+// dedupRemote 把同一端口在多个 BindAddr 上的重复条目合并为一条，
+// 取 BindAddr 优先级最高者，保持端口首次出现的顺序。
+// 典型场景：同一服务同时在 IPv4 0.0.0.0 与 IPv6 [::] 监听，扫描会各报一条，
+// 但 forward 只需启一次，UI 也只应显示一行。
+func dedupRemote(remote []model.RemotePort) []model.RemotePort {
+	if len(remote) == 0 {
+		return nil
+	}
+	idxByPort := make(map[int]int, len(remote))
+	out := make([]model.RemotePort, 0, len(remote))
+	for _, r := range remote {
+		if i, ok := idxByPort[r.Port]; ok {
+			if bindAddrPriority(r.BindAddr) > bindAddrPriority(out[i].BindAddr) {
+				out[i] = r
+			}
+			continue
+		}
+		idxByPort[r.Port] = len(out)
+		out = append(out, r)
+	}
+	return out
+}
+
+// bindAddrPriority 返回 BindAddr 的展示优先级，数值越大越优先。
+// 偏好可对外的通配地址（0.0.0.0 > ::），其次环回（127.0.0.1 > ::1）。
+func bindAddrPriority(addr string) int {
+	switch addr {
+	case "0.0.0.0":
+		return 4
+	case "::":
+		return 3
+	case "127.0.0.1":
+		return 2
+	case "::1":
+		return 1
+	default:
+		return 0
+	}
 }
 
 func setToSortedSlice(s map[int]struct{}) []int {
