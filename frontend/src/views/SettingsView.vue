@@ -6,9 +6,9 @@ import {
   NForm,
   NFormItem,
   NInputNumber,
-  NSwitch,
   NDynamicTags,
   NButton,
+  NText,
   useMessage,
 } from 'naive-ui'
 import { useAppStore } from '../store/state'
@@ -17,19 +17,15 @@ import { zh } from '../i18n/zh'
 const store = useAppStore()
 const message = useMessage()
 
-const interval = ref(15)
+const interval = ref<number>(15)
 const excludePorts = ref<string[]>([])
-const onlyPublic = ref(false)
-const offset = ref(0)
 
 watch(
   () => store.config,
   (c) => {
     if (!c) return
     interval.value = c.scan_interval_sec
-    excludePorts.value = c.rules.exclude_ports.map(String)
-    onlyPublic.value = c.rules.only_public_bind
-    offset.value = c.rules.local_port_offset
+    excludePorts.value = (c.rules.exclude_ports ?? []).map(String)
   },
   { immediate: true },
 )
@@ -37,10 +33,10 @@ watch(
 async function save() {
   await store.updateScanInterval(interval.value)
   await store.updateRules({
-    exclude_ports: excludePorts.value.map((s) => Number(s)).filter((n) => !Number.isNaN(n)),
+    exclude_ports: excludePorts.value
+      .map((s) => Number(s))
+      .filter((n) => !Number.isNaN(n) && n > 0),
     exclude_ranges: store.config?.rules.exclude_ranges ?? [],
-    only_public_bind: onlyPublic.value,
-    local_port_offset: offset.value,
   })
   message.success(zh.settings.saved)
 }
@@ -49,23 +45,41 @@ const hasConfig = computed(() => store.config !== null)
 </script>
 
 <template>
-  <n-card v-if="hasConfig" :title="zh.settings.title">
-    <n-form label-placement="left" label-width="160">
-      <n-form-item :label="zh.settings.scanInterval">
-        <n-input-number v-model:value="interval" :min="3" :max="3600" />
-      </n-form-item>
-      <n-form-item :label="zh.settings.excludePorts">
-        <n-dynamic-tags v-model:value="excludePorts" />
-      </n-form-item>
-      <n-form-item :label="zh.settings.onlyPublicBind">
-        <n-switch v-model:value="onlyPublic" />
-      </n-form-item>
-      <n-form-item :label="zh.settings.localPortOffset">
-        <n-input-number v-model:value="offset" :min="0" :max="50000" />
-      </n-form-item>
-      <n-space justify="end">
-        <n-button type="primary" @click="save">{{ zh.settings.save }}</n-button>
-      </n-space>
-    </n-form>
-  </n-card>
+  <n-space vertical :size="16">
+    <n-card v-if="hasConfig" :title="zh.settings.title">
+      <n-form label-placement="left" label-width="160">
+        <n-form-item :label="zh.settings.scanInterval">
+          <n-space vertical :size="4" style="width: 100%">
+            <n-input-number
+              v-model:value="interval"
+              :min="3"
+              :max="3600"
+              :placeholder="zh.settings.scanIntervalDefault"
+              style="width: 160px"
+            />
+            <n-text depth="3" style="font-size: 11px">
+              {{ zh.settings.scanIntervalDefault }}
+            </n-text>
+          </n-space>
+        </n-form-item>
+        <n-form-item :label="zh.settings.excludePorts">
+          <n-space vertical :size="4" style="width: 100%">
+            <n-dynamic-tags v-model:value="excludePorts" />
+            <n-text depth="3" style="font-size: 11px">
+              {{ zh.settings.excludePortsDefault }}
+            </n-text>
+          </n-space>
+        </n-form-item>
+        <n-space justify="end">
+          <n-button type="primary" @click="save">{{ zh.settings.save }}</n-button>
+        </n-space>
+      </n-form>
+    </n-card>
+
+    <n-card :title="zh.settings.sshConfig">
+      <n-text depth="3" style="font-size: 12px">
+        {{ zh.settings.sshConfigDesc }}
+      </n-text>
+    </n-card>
+  </n-space>
 </template>

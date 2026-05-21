@@ -1,70 +1,192 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { NSpace, NSelect, NButton, NEmpty, NText, NIcon } from 'naive-ui'
+import { computed, onMounted } from 'vue'
+import {
+  NSpace,
+  NButton,
+  NEmpty,
+  NText,
+  NTag,
+  NCard,
+  NSwitch,
+  NCollapse,
+  NCollapseItem,
+  NAlert,
+  useMessage,
+} from 'naive-ui'
 import PortTable from '../components/PortTable.vue'
 import { useAppStore } from '../store/state'
 import { zh } from '../i18n/zh'
+import type { Host, ServerConnState } from '../types'
 
 const store = useAppStore()
-
-const serverOptions = computed(() =>
-  store.servers.map((s) => ({ label: `${s.name || s.host} (${s.host})`, value: s.id })),
-)
-const selectedServer = ref<string | null>(null)
-
-const filtered = computed(() => {
-  if (!selectedServer.value) return store.forwards
-  return store.forwards.filter((f) => f.server_id === selectedServer.value)
-})
+const message = useMessage()
 
 const lastScanLabel = computed(() => {
   if (!store.lastScanAt) return zh.monitor.never
   return new Date(store.lastScanAt).toLocaleTimeString('zh-CN')
 })
 
+// host alias → 是否启用监控
+const isEnabled = (alias: string) => store.enabledHosts.includes(alias)
+
+// host alias → 连接状态字符串
+function connLabel(alias: string): { label: string; type: 'default' | 'success' | 'warning' | 'error' } {
+  const s = store.serverStatus[alias]
+  if (!s) {
+    return { label: zh.conn.unknown, type: 'default' }
+  }
+  const stateMap: Record<ServerConnState, { label: string; type: 'default' | 'success' | 'warning' | 'error' }> = {
+    dialing: { label: zh.conn.dialing, type: 'warning' },
+    connected: { label: zh.conn.connected, type: 'success' },
+    broken: { label: zh.conn.broken, type: 'error' },
+    degraded: { label: zh.conn.degraded, type: 'error' },
+  }
+  return stateMap[s.state] ?? { label: zh.conn.unknown, type: 'default' }
+}
+
+// host alias → 该 host 下所有 forward 行
+const forwardsOf = (alias: string) => store.forwards.filter((f) => f.server_id === alias)
+
+// 连接错误信息（host key 等），用于卡片内 Alert。
+function connError(alias: string): string | null {
+  const s = store.serverStatus[alias]
+  if (!s || !s.error) return null
+  if (s.state === 'connected') return null
+  return s.error
+}
+
 async function onScan() {
   await store.scanNow()
 }
-async function onStart() {
-  // 在 wails 环境下直接调；mock 模式 noop。
-  await window.go?.main?.App?.StartAll?.()
+
+async function onReload() {
+  try {
+    await store.reloadSSHConfig()
+    message.success('已刷新')
+  } catch (e) {
+    message.error(String((e as Error)?.message ?? e))
+  }
 }
-async function onStop() {
-  await window.go?.main?.App?.StopAll?.()
+
+async function onToggleHost(alias: string, on: boolean) {
+  try {
+    await store.setHostEnabled(alias, on)
+  } catch (e) {
+    message.error(String((e as Error)?.message ?? e))
+  }
 }
-async function onToggle(serverId: string, port: number, on: boolean) {
+
+async function onTestHost(alias: string) {
+  try {
+    await store.testHost(alias)
+    message.success(zh.hosts.testOK)
+  } catch (e) {
+    message.error(`${zh.hosts.testFail}: ${(e as Error)?.message ?? e}`)
+  }
+}
+
+async function onTogglePort(serverId: string, port: number, on: boolean) {
   await window.go?.main?.App?.ToggleForward?.(serverId, port, on)
   await store.scanNow()
 }
+
+// 卡片显示顺序：enabled 优先，再按 alias 字典序。
+const sortedHosts = computed<Host[]>(() => {
+  const list = [...store.hosts]
+  list.sort((a, b) => {
+    const ea = isEnabled(a.alias) ? 0 : 1
+    const eb = isEnabled(b.alias) ? 0 : 1
+    if (ea !== eb) return ea - eb
+    return a.alias.localeCompare(b.alias)
+  })
+  return list
+})
+
+onMounted(async () => {
+  if (!store.config) {
+    await store.refresh()
+  }
+})
 </script>
 
 <template>
   <n-space vertical :size="16">
     <n-space justify="space-between" align="center">
       <n-space>
-        <n-select
-          v-model:value="selectedServer"
-          :options="serverOptions"
-          :placeholder="zh.monitor.server"
-          clearable
-          style="width: 240px"
-        />
         <n-button type="primary" @click="onScan" :loading="store.loading">
           {{ zh.monitor.scanNow }}
         </n-button>
-        <n-button @click="onStart">{{ zh.monitor.startAll }}</n-button>
-        <n-button @click="onStop">{{ zh.monitor.stopAll }}</n-button>
+        <n-button @click="onReload">{{ zh.monitor.reload }}</n-button>
       </n-space>
-      <n-text depth="3">
-        {{ zh.monitor.lastScan }}: {{ lastScanLabel }}
-      </n-text>
+      <n-text depth="3">{{ zh.monitor.lastScan }}: {{ lastScanLabel }}</n-text>
     </n-space>
 
-    <port-table
-      v-if="filtered.length > 0"
-      :data="filtered"
-      @toggle="onToggle"
+    <n-empty
+      v-if="sortedHosts.length === 0"
+      :description="zh.monitor.emptyHosts"
     />
-    <n-empty v-else :description="zh.monitor.empty" />
+
+    <n-collapse
+      v-else
+      :default-expanded-names="sortedHosts.filter((h) => isEnabled(h.alias)).map((h) => h.alias)"
+    >
+      <n-collapse-item
+        v-for="h in sortedHosts"
+        :key="h.alias"
+        :name="h.alias"
+        :title="h.alias"
+      >
+        <template #header-extra>
+          <n-space :size="8" align="center" @click.stop>
+            <n-text depth="3" style="font-size: 12px">
+              {{ h.user }}@{{ h.host_name }}:{{ h.port }}
+            </n-text>
+            <n-tag :type="connLabel(h.alias).type" size="small" round>
+              {{ connLabel(h.alias).label }}
+            </n-tag>
+            <n-text style="font-size: 12px">{{ zh.hosts.monitor }}</n-text>
+            <n-switch
+              :value="isEnabled(h.alias)"
+              size="small"
+              @update:value="(v: boolean) => onToggleHost(h.alias, v)"
+            />
+            <n-button size="tiny" @click.stop="onTestHost(h.alias)">
+              {{ zh.hosts.test }}
+            </n-button>
+          </n-space>
+        </template>
+
+        <n-space vertical :size="8">
+          <n-alert
+            v-if="connError(h.alias)"
+            type="warning"
+            :show-icon="false"
+            style="font-size: 12px"
+          >
+            {{ connError(h.alias) }}
+            <br />
+            <n-text depth="3" style="font-size: 11px">
+              {{ zh.monitor.hostKeyTip.replace('{alias}', h.alias) }}
+            </n-text>
+          </n-alert>
+
+          <template v-if="isEnabled(h.alias)">
+            <port-table
+              v-if="forwardsOf(h.alias).length > 0"
+              :data="forwardsOf(h.alias)"
+              @toggle="onTogglePort"
+            />
+            <n-empty
+              v-else
+              :description="zh.monitor.emptyPort"
+              style="padding: 12px 0"
+            />
+          </template>
+          <n-text v-else depth="3" style="font-size: 12px">
+            {{ zh.monitor.offNote }}
+          </n-text>
+        </n-space>
+      </n-collapse-item>
+    </n-collapse>
   </n-space>
 </template>

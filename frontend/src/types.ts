@@ -1,4 +1,4 @@
-// types.ts —— 镜像 Go internal/model 与 internal/config 的核心结构。
+// types.ts —— 镜像 Go internal/model + internal/config + internal/sshcfg 的核心结构。
 //
 // 字段名与 JSON tag 完全一致，便于 wails 反序列化直接喂入。
 
@@ -45,34 +45,26 @@ export interface Span {
 export interface Rules {
   exclude_ports: number[]
   exclude_ranges: Span[]
-  only_public_bind: boolean
-  local_port_offset: number
 }
 
-export interface Server {
-  id: string
-  name: string
-  host: string
-  port: number
+// Host 镜像 Go sshcfg.Host —— 来自 ssh config 的具体别名 + ssh -G effective 配置。
+export interface Host {
+  alias: string
+  host_name: string
   user: string
-  auth_method: 'password' | 'ssh_key' | 'ssh_agent'
-  password?: string
-  key_path?: string
-  passphrase?: string
-  host_key: 'known_hosts' | 'insecure'
-  enabled: boolean
+  port: number
 }
 
 export interface Config {
   scan_interval_sec: number
-  servers: Server[]
   rules: Rules
+  enabled_hosts: string[]
 }
 
 export type ServerConnState = 'dialing' | 'connected' | 'broken' | 'degraded'
 
 export interface ServerStatus {
-  server_id: string
+  server_id: string // 实际为 ssh alias
   state: ServerConnState
   attempt: number
   disconnected_ms: number
