@@ -1,6 +1,5 @@
 /tmp/
-/build/bin/
-/build/darwin/
+/build/
 /frontend/dist/
 /frontend/node_modules/
 /frontend/wailsjs/
