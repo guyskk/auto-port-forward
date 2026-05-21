@@ -4,19 +4,25 @@
 //   - 列举别名通过 shell 命令（grep/awk）实现，不在 Go 里 parse ssh config 语法。
 //   - 解析单个别名的 effective 配置依靠 `ssh -G <alias>`，由 OpenSSH 自己完成。
 //   - 所有外部命令调用通过 Runner 接口，便于单测注入 fake。
+//
+// MVP 不展开 Include 指令、不解析 Match 块；通配符别名（含 * ? !）由 shell pipeline
+// 过滤掉。后续按用户反馈追加。
 package sshcfg
 
-import "context"
+import (
+	"context"
+	"os/exec"
+)
 
 // Host 表示从 ssh config 解析出的一台目标主机的核心连接参数。
 //
 // 仅保留连接 ControlMaster 必需的字段。认证 / ProxyJump / known_hosts
 // 等高级配置完全交给系统 ssh 处理，APP 不存也不参与决策。
 type Host struct {
-	Alias    string `json:"alias"`     // ssh config 中具体别名（已过滤通配符）
-	HostName string `json:"host_name"` // ssh -G 的 effective hostname
-	User     string `json:"user"`      // ssh -G 的 effective user
-	Port     int    `json:"port"`      // ssh -G 的 effective port，默认 22
+	Alias    string `json:"alias"`
+	HostName string `json:"host_name"`
+	User     string `json:"user"`
+	Port     int    `json:"port"`
 }
 
 // Runner 抽象"执行命令"的能力。
@@ -27,4 +33,16 @@ type Runner interface {
 	Run(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
-// TODO(T2): 实现 ListAliases / Resolve / ListHosts / DefaultRunner。
+// NewDefaultRunner 返回生产 Runner：调用系统命令，捕获 stdout。
+//
+// stderr 默认丢弃 — 调用方关心的是 stdout 内容；命令失败由 exit code 表达。
+func NewDefaultRunner() Runner {
+	return defaultRunner{}
+}
+
+type defaultRunner struct{}
+
+func (defaultRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	return cmd.Output()
+}
