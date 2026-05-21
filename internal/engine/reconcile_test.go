@@ -34,6 +34,10 @@ func TestReconcile_pendingForNewPort(t *testing.T) {
 	if len(out.DesiredPorts) != 1 || out.DesiredPorts[0] != 9527 {
 		t.Errorf("desired=%#v", out.DesiredPorts)
 	}
+	// localPort 必须等于 remotePort（不再支持 offset）
+	if out.Snapshot[0].LocalPort != 9527 {
+		t.Errorf("localPort = %d, want 9527", out.Snapshot[0].LocalPort)
+	}
 }
 
 func TestReconcile_excludedDoesNotEnterDesired(t *testing.T) {
@@ -108,22 +112,6 @@ func TestReconcile_diffComputesAddDel(t *testing.T) {
 	}
 	if !reflect.DeepEqual(ops, want) {
 		t.Errorf("diff = %#v, want %#v", ops, want)
-	}
-}
-
-func TestReconcile_localPortOffsetApplied(t *testing.T) {
-	out := Reconcile(Inputs{
-		ServerID: "ubt",
-		Remote:   []model.RemotePort{rp(80, "0.0.0.0")},
-		Rules:    config.Rules{LocalPortOffset: 20000},
-		IsRoot:   false,
-	})
-	if out.Snapshot[0].LocalPort != 20080 {
-		t.Errorf("local port = %d, want 20080", out.Snapshot[0].LocalPort)
-	}
-	// 因为 LocalPort 20080 不是特权，应当 pending。
-	if out.Snapshot[0].Status != model.StatusPending {
-		t.Errorf("status = %q, want pending", out.Snapshot[0].Status)
 	}
 }
 

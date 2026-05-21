@@ -1,4 +1,4 @@
-package sshpool
+package sshctl
 
 import "time"
 

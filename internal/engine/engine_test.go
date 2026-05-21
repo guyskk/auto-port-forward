@@ -3,21 +3,19 @@ package engine
 import (
 	"context"
 	"fmt"
-	"net"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"auto-port-forward/internal/config"
 	"auto-port-forward/internal/model"
+	"auto-port-forward/internal/sshcfg"
 )
 
-// 测试 1: StartAll 连接所有 enabled server。
-func TestEngine_StartAll_connectsEnabledServers(t *testing.T) {
+// 测试 1: StartAll 连接所有 enabled host。
+func TestEngine_StartAll_connectsEnabledHosts(t *testing.T) {
 	fc := &fakeClient{}
-	eng := newEngineWith(t, fc, config.Config{
-		Servers: []config.Server{{ID: "s1", Host: "h", Enabled: true}},
-	})
+	eng := newEngineWithHosts(t, fc, config.Config{}, []sshcfg.Host{stubHost("s1")})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := eng.StartAll(ctx); err != nil {
@@ -27,12 +25,10 @@ func TestEngine_StartAll_connectsEnabledServers(t *testing.T) {
 	waitFor(t, time.Second, func() bool { return atomic.LoadInt32(&fc.connectCount) >= 1 }, "Connect called")
 }
 
-// 测试 2: 禁用 server 不连接。
-func TestEngine_StartAll_skipsDisabledServers(t *testing.T) {
+// 测试 2: 没有任何启用 host 时不连接。
+func TestEngine_StartAll_skipsWhenNoHosts(t *testing.T) {
 	fc := &fakeClient{}
-	eng := newEngineWith(t, fc, config.Config{
-		Servers: []config.Server{{ID: "s1", Host: "h", Enabled: false}},
-	})
+	eng := newEngineWithHosts(t, fc, config.Config{}, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := eng.StartAll(ctx); err != nil {
@@ -45,19 +41,13 @@ func TestEngine_StartAll_skipsDisabledServers(t *testing.T) {
 	}
 }
 
-// 测试 3: ScanNow 发现远端端口并启动 forward。
-func TestEngine_ScanNow_startsForwardForNewPort(t *testing.T) {
+// 测试 3: ScanNow 发现远端端口 → 调 AddForward → 状态变 forwarding。
+func TestEngine_ScanNow_addsForwardForNewPort(t *testing.T) {
 	remotePort := 19527
-	localPort := reservePort(t)
-	offset := localPort - remotePort
-
 	ssOut := fmt.Sprintf("LISTEN 0 128 0.0.0.0:%d 0.0.0.0:*\n", remotePort)
 	fc := &fakeClient{runOutput: []byte(ssOut)}
 
-	eng := newEngineWith(t, fc, config.Config{
-		Servers: []config.Server{{ID: "s1", Host: "h", Enabled: true}},
-		Rules:   config.Rules{LocalPortOffset: offset},
-	})
+	eng := newEngineWithHosts(t, fc, config.Config{}, []sshcfg.Host{stubHost("s1")})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := eng.StartAll(ctx); err != nil {
@@ -78,28 +68,23 @@ func TestEngine_ScanNow_startsForwardForNewPort(t *testing.T) {
 		return false
 	}, "forward becomes forwarding")
 
-	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", localPort))
-	if err != nil {
-		t.Fatalf("dial local forward: %v", err)
+	if atomic.LoadInt32(&fc.addForwardCount) < 1 {
+		t.Errorf("AddForward not called: count=%d", fc.addForwardCount)
 	}
-	conn.Close()
-
-	waitFor(t, time.Second, func() bool { return atomic.LoadInt32(&fc.dialCount) >= 1 }, "fakeClient.Dial called")
+	ports := fc.snapshotAddedPorts()
+	if len(ports) == 0 || ports[0] != remotePort {
+		t.Errorf("AddForward ports = %v, want first %d", ports, remotePort)
+	}
 }
 
-// 测试 4: 远端端口消失 → 下次 scan 删除 forward。
-func TestEngine_ScanNow_removesForwardWhenPortGone(t *testing.T) {
+// 测试 4: 远端端口消失 → 下次 scan 调 CancelForward。
+func TestEngine_ScanNow_cancelsForwardWhenPortGone(t *testing.T) {
 	remotePort := 19528
-	localPort := reservePort(t)
-	offset := localPort - remotePort
 
 	fc := &fakeClient{
 		runOutput: []byte(fmt.Sprintf("LISTEN 0 128 0.0.0.0:%d 0.0.0.0:*\n", remotePort)),
 	}
-	eng := newEngineWith(t, fc, config.Config{
-		Servers: []config.Server{{ID: "s1", Host: "h", Enabled: true}},
-		Rules:   config.Rules{LocalPortOffset: offset},
-	})
+	eng := newEngineWithHosts(t, fc, config.Config{}, []sshcfg.Host{stubHost("s1")})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := eng.StartAll(ctx); err != nil {
@@ -111,13 +96,8 @@ func TestEngine_ScanNow_removesForwardWhenPortGone(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, 2*time.Second, func() bool {
-		for _, f := range eng.Snapshot() {
-			if f.Status == model.StatusForwarding {
-				return true
-			}
-		}
-		return false
-	}, "first scan starts forward")
+		return atomic.LoadInt32(&fc.addForwardCount) >= 1
+	}, "first scan adds forward")
 
 	fc.mu.Lock()
 	fc.runOutput = []byte("")
@@ -127,22 +107,19 @@ func TestEngine_ScanNow_removesForwardWhenPortGone(t *testing.T) {
 	}
 
 	waitFor(t, 2*time.Second, func() bool {
-		_, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", localPort), 200*time.Millisecond)
-		return err != nil
-	}, "local listener closes after port gone")
+		return atomic.LoadInt32(&fc.cancelForwardCount) >= 1
+	}, "second scan cancels forward")
+	cancelled := fc.snapshotCancelledPorts()
+	if len(cancelled) == 0 || cancelled[0] != remotePort {
+		t.Errorf("Cancel ports = %v, want first %d", cancelled, remotePort)
+	}
 }
 
-// 测试 5: StopAll 关闭所有 client + listener。
+// 测试 5: StopAll 关闭所有 client。
 func TestEngine_StopAll_closesClients(t *testing.T) {
 	remotePort := 19529
-	localPort := reservePort(t)
-	offset := localPort - remotePort
-
 	fc := &fakeClient{runOutput: []byte(fmt.Sprintf("LISTEN 0 128 0.0.0.0:%d 0.0.0.0:*\n", remotePort))}
-	eng := newEngineWith(t, fc, config.Config{
-		Servers: []config.Server{{ID: "s1", Host: "h", Enabled: true}},
-		Rules:   config.Rules{LocalPortOffset: offset},
-	})
+	eng := newEngineWithHosts(t, fc, config.Config{}, []sshcfg.Host{stubHost("s1")})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := eng.StartAll(ctx); err != nil {
@@ -152,13 +129,8 @@ func TestEngine_StopAll_closesClients(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, 2*time.Second, func() bool {
-		for _, f := range eng.Snapshot() {
-			if f.Status == model.StatusForwarding {
-				return true
-			}
-		}
-		return false
-	}, "forward started")
+		return atomic.LoadInt32(&fc.addForwardCount) >= 1
+	}, "forward added")
 
 	if err := eng.StopAll(); err != nil {
 		t.Fatal(err)
@@ -166,18 +138,12 @@ func TestEngine_StopAll_closesClients(t *testing.T) {
 	if atomic.LoadInt32(&fc.closed) != 1 {
 		t.Errorf("fakeClient.Close not called")
 	}
-	waitFor(t, time.Second, func() bool {
-		_, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", localPort), 200*time.Millisecond)
-		return err != nil
-	}, "local listener closes after StopAll")
 }
 
 // 测试 6: ScanNow 在 StartAll 之前调用应返回 ErrNotRunning。
 func TestEngine_ScanNow_returnsErrorWhenNotRunning(t *testing.T) {
 	fc := &fakeClient{}
-	eng := newEngineWith(t, fc, config.Config{
-		Servers: []config.Server{{ID: "s1", Host: "h", Enabled: true}},
-	})
+	eng := newEngineWithHosts(t, fc, config.Config{}, []sshcfg.Host{stubHost("s1")})
 	if err := eng.ScanNow(context.Background()); err == nil {
 		t.Errorf("expected error when not running")
 	}
@@ -186,14 +152,8 @@ func TestEngine_ScanNow_returnsErrorWhenNotRunning(t *testing.T) {
 // 测试 7: Snapshot 返回深拷贝，调用方修改不影响内部状态。
 func TestEngine_Snapshot_returnsCopy(t *testing.T) {
 	remotePort := 19530
-	localPort := reservePort(t)
-	offset := localPort - remotePort
-
 	fc := &fakeClient{runOutput: []byte(fmt.Sprintf("LISTEN 0 128 0.0.0.0:%d 0.0.0.0:*\n", remotePort))}
-	eng := newEngineWith(t, fc, config.Config{
-		Servers: []config.Server{{ID: "s1", Host: "h", Enabled: true}},
-		Rules:   config.Rules{LocalPortOffset: offset},
-	})
+	eng := newEngineWithHosts(t, fc, config.Config{}, []sshcfg.Host{stubHost("s1")})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := eng.StartAll(ctx); err != nil {
@@ -214,4 +174,31 @@ func TestEngine_Snapshot_returnsCopy(t *testing.T) {
 	if s2[0].Status == "tampered" {
 		t.Errorf("snapshot is not a copy: caller mutation leaked")
 	}
+}
+
+// 测试 8: AddForward 失败时端口状态变 conflict，错误消息透传。
+func TestEngine_ScanNow_addForwardErrorBecomesConflict(t *testing.T) {
+	remotePort := 19531
+	fc := &fakeClient{
+		runOutput:       []byte(fmt.Sprintf("LISTEN 0 128 0.0.0.0:%d 0.0.0.0:*\n", remotePort)),
+		addForwardError: errBindFailed,
+	}
+	eng := newEngineWithHosts(t, fc, config.Config{}, []sshcfg.Host{stubHost("s1")})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := eng.StartAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer eng.StopAll()
+	if err := eng.ScanNow(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		for _, f := range eng.Snapshot() {
+			if f.RemotePort == remotePort && f.Status == model.StatusConflict {
+				return true
+			}
+		}
+		return false
+	}, "AddForward failure becomes conflict")
 }

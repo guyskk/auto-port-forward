@@ -5,13 +5,12 @@ import (
 	"sort"
 
 	"auto-port-forward/internal/events"
-	"auto-port-forward/internal/forward"
 	"auto-port-forward/internal/model"
 )
 
-// scanTick 执行一次扫描：对每个 server 扫描远端 → reconcile → 执行 diff → 写入 snapshot。
+// scanTick 执行一次扫描：对每个 host 扫描远端 → reconcile → 执行 diff → 写入 snapshot。
 //
-// 不在 mu 内执行（耗时操作）；server 列表在 StartAll 时固定，StopAll 后 ctx.Done。
+// 不在 mu 内执行（耗时操作）；host 列表在 StartAll 时固定，StopAll 后 ctx.Done。
 func (e *Engine) scanTick(ctx context.Context) error {
 	// 复制 server 切片，避免持锁执行 I/O。
 	e.mu.Lock()
@@ -58,13 +57,13 @@ func (e *Engine) scanTick(ctx context.Context) error {
 	return firstErr
 }
 
-// scanServer 处理单个 server 的扫描循环：远端扫描 → 计算 Inputs → Reconcile → 启停 forward。
+// scanServer 处理单个 host 的扫描循环：远端扫描 → 计算 Inputs → Reconcile → 启停 forward。
 func (e *Engine) scanServer(ctx context.Context, st *serverState, local []model.LocalPort) ([]model.Forward, error) {
 	remote, err := st.scanner.Scan(ctx, execAdapter{st.client})
 	if err != nil {
 		if e.emit != nil {
 			e.emit.Emit(ctx, events.EventScanError, map[string]any{
-				"server_id": st.cfg.ID,
+				"server_id": st.cfg.Alias,
 				"error":     err.Error(),
 			})
 		}
@@ -84,7 +83,7 @@ func (e *Engine) scanServer(ctx context.Context, st *serverState, local []model.
 	st.mu.Unlock()
 
 	in := Inputs{
-		ServerID:       st.cfg.ID,
+		ServerID:       st.cfg.Alias,
 		Remote:         remote,
 		LocalOccupied:  occupied,
 		CurrentForward: currentMap,
@@ -99,7 +98,7 @@ func (e *Engine) scanServer(ctx context.Context, st *serverState, local []model.
 		case "add":
 			e.startForward(ctx, st, op.Port)
 		case "del":
-			e.stopForward(st, op.Port)
+			e.stopForward(ctx, st, op.Port)
 		}
 	}
 
@@ -124,7 +123,7 @@ func buildLocalOccupied(local []model.LocalPort) map[int]LocalOwnership {
 	return m
 }
 
-// currentSnapshot 在扫描失败时返回该 server 现有 forward 的快照。
+// currentSnapshot 在扫描失败时返回该 host 现有 forward 的快照。
 func (e *Engine) currentSnapshot(st *serverState) []model.Forward {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -135,9 +134,9 @@ func (e *Engine) currentSnapshot(st *serverState) []model.Forward {
 	for port, h := range st.forwards {
 		h.mu.Lock()
 		f := model.Forward{
-			ServerID:   st.cfg.ID,
+			ServerID:   st.cfg.Alias,
 			RemotePort: port,
-			LocalPort:  port + e.cfg.Rules.LocalPortOffset,
+			LocalPort:  port,
 			Status:     h.status,
 			Error:      h.errMsg,
 			LastActive: h.updated.Load(),
@@ -148,65 +147,60 @@ func (e *Engine) currentSnapshot(st *serverState) []model.Forward {
 	return out
 }
 
-// startForward 启动一条 forward goroutine 并登记到 st.forwards。
+// startForward 通过 ssh ControlMaster 增加一条本地转发，并登记到 st.forwards。
+//
+// localPort = remotePort（不再支持 LocalPortOffset）。
+// AddForward 失败时记录 error 状态，但仍登记 handle — 下次 reconcile 会重试。
 func (e *Engine) startForward(ctx context.Context, st *serverState, remotePort int) {
 	st.mu.Lock()
 	if _, exists := st.forwards[remotePort]; exists {
 		st.mu.Unlock()
 		return
 	}
-	localPort := remotePort + e.cfg.Rules.LocalPortOffset
-	fctx, cancel := context.WithCancel(ctx)
-	h := &forwardHandle{cancel: cancel}
+	h := &forwardHandle{}
 	st.forwards[remotePort] = h
+	c := st.client
 	st.mu.Unlock()
 
-	report := e.makeReport(st, remotePort, h)
-	f := &forward.Forward{
-		RemotePort: remotePort,
-		LocalPort:  localPort,
-		Bind:       "127.0.0.1",
-		Report:     report,
+	err := c.AddForward(ctx, remotePort)
+	h.mu.Lock()
+	if err != nil {
+		h.status = model.StatusConflict
+		h.errMsg = err.Error()
+	} else {
+		h.status = model.StatusForwarding
+		h.errMsg = ""
 	}
-	go func() {
-		_ = f.Run(fctx, st.client)
-	}()
+	h.mu.Unlock()
+	h.updated.Store(e.deps.Now().Unix())
+	if e.emit != nil {
+		status := string(model.StatusForwarding)
+		if err != nil {
+			status = string(model.StatusConflict)
+		}
+		e.emit.Emit(context.Background(), events.EventForwardUpdate, map[string]any{
+			"server_id":   st.cfg.Alias,
+			"remote_port": remotePort,
+			"status":      status,
+			"error":       errString(err),
+		})
+	}
 }
 
-// stopForward 取消一条 forward 并从 st.forwards 摘除。
-func (e *Engine) stopForward(st *serverState, remotePort int) {
+// stopForward 通过 ssh ControlMaster 取消一条本地转发并从 st.forwards 摘除。
+func (e *Engine) stopForward(ctx context.Context, st *serverState, remotePort int) {
 	st.mu.Lock()
-	h, ok := st.forwards[remotePort]
+	_, ok := st.forwards[remotePort]
 	if ok {
 		delete(st.forwards, remotePort)
 	}
+	c := st.client
 	st.mu.Unlock()
-	if ok {
-		h.cancel()
+	if !ok {
+		return
 	}
-}
-
-// makeReport 构造 forward.ReportFunc，把状态变化写到 forwardHandle。
-func (e *Engine) makeReport(st *serverState, remotePort int, h *forwardHandle) forward.ReportFunc {
-	return func(status string, err error) {
-		h.mu.Lock()
-		h.status = model.PortStatus(status)
-		if err != nil {
-			h.errMsg = err.Error()
-		} else {
-			h.errMsg = ""
-		}
-		h.mu.Unlock()
-		h.updated.Store(e.deps.Now().Unix())
-		if e.emit != nil {
-			e.emit.Emit(context.Background(), events.EventForwardUpdate, map[string]any{
-				"server_id":   st.cfg.ID,
-				"remote_port": remotePort,
-				"status":      status,
-				"error":       errString(err),
-			})
-		}
-	}
+	// 失败也无所谓 — handle 已经摘除；下次 reconcile 不会再列出。
+	_ = c.CancelForward(ctx, remotePort)
 }
 
 func errString(err error) string {
