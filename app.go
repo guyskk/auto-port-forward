@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"time"
 
 	"auto-port-forward/internal/config"
@@ -13,26 +14,31 @@ import (
 	"auto-port-forward/internal/events"
 	"auto-port-forward/internal/model"
 	"auto-port-forward/internal/scan"
-	"auto-port-forward/internal/sshpool"
+	"auto-port-forward/internal/sshcfg"
+	"auto-port-forward/internal/sshctl"
 )
 
 // App 是 Wails 绑定的门面，所有 Vue 调用都打到这些方法上。
 //
 // 持久化路径由 config.DefaultPath() 决定，可被 NewAppWithStore 替换以便测试。
 type App struct {
-	ctx    context.Context
-	store  *config.Store
-	engine *engine.Engine
-	emit   events.Emitter
+	ctx        context.Context
+	store      *config.Store
+	engine     *engine.Engine
+	emit       events.Emitter
+	controlDir string
+	sshRunner  sshcfg.Runner
+
+	// clientFactory 可被测试覆盖；为 nil 时使用 sshctl.NewClient。
+	clientFactory func(host sshcfg.Host) engine.ClientHandle
 }
 
 // NewApp 构造未启动的 App。Startup 完成 store/engine 装配。
 func NewApp() *App {
-	// emit 在 Startup 时用 wails ctx 重建；这里先留 nil，setup 再赋值。
 	return &App{}
 }
 
-// Startup 由 wails 在窗口就绪后调用：加载配置 + 装配 engine。
+// Startup 由 wails 在窗口就绪后调用：加载配置 + 装配 engine + 启动。
 func (a *App) Startup(ctx context.Context) {
 	path, err := config.DefaultPath()
 	if err != nil {
@@ -41,10 +47,19 @@ func (a *App) Startup(ctx context.Context) {
 	}
 	if err := a.setup(ctx, path); err != nil {
 		log.Printf("app setup: %v", err)
+		return
+	}
+	if err := a.engine.StartAll(ctx); err != nil {
+		log.Printf("engine start: %v", err)
+		return
+	}
+	// 启动后异步同步一次 ssh config 列表 → engine。
+	if err := a.ReloadSSHConfig(); err != nil {
+		log.Printf("reload ssh config: %v", err)
 	}
 }
 
-// setup 装配 store + engine 并启动；从 Startup / 测试入口共用。
+// setup 装配 store + engine（不启动 engine — 测试可独立验证）。
 func (a *App) setup(ctx context.Context, path string) error {
 	a.ctx = ctx
 	store, err := config.NewStore(path)
@@ -55,12 +70,30 @@ func (a *App) setup(ctx context.Context, path string) error {
 	if a.emit == nil {
 		a.emit = events.NewWailsEmitter(ctx)
 	}
+	if a.sshRunner == nil {
+		a.sshRunner = sshcfg.NewDefaultRunner()
+	}
+	if a.controlDir == "" {
+		dir, derr := os.UserConfigDir()
+		if derr != nil {
+			dir = "."
+		}
+		a.controlDir = filepath.Join(dir, "auto-port-forward", "ctl")
+	}
+	factory := a.clientFactory
+	if factory == nil {
+		runner := sshctl.NewDefaultRunner()
+		controlDir := a.controlDir
+		factory = func(h sshcfg.Host) engine.ClientHandle {
+			return sshctl.NewClient(h, runner, controlDir)
+		}
+	}
 	a.engine = engine.New(store.Snapshot(), a.emit, engine.Deps{
-		ClientFactory: func(s config.Server) engine.ClientHandle { return sshpool.NewClient(s) },
+		ClientFactory: factory,
 		LocalScan:     scan.ScanLocal,
 		IsRoot:        os.Geteuid() == 0,
 	})
-	return a.engine.StartAll(ctx)
+	return nil
 }
 
 // Shutdown 由 wails 在退出前调用。
@@ -71,65 +104,62 @@ func (a *App) Shutdown(ctx context.Context) {
 	}
 }
 
-// --- Wails 绑定: Server CRUD ---
+// --- Wails 绑定: SSH host 列举 / 启用 ---
 
-// ListServers 返回当前配置中的全部服务器。
-func (a *App) ListServers() []config.Server {
+// ListHosts 返回 ~/.ssh/config 中所有具体（非通配符）的别名及其 effective 配置。
+func (a *App) ListHosts() ([]sshcfg.Host, error) {
+	if a.sshRunner == nil {
+		return nil, errStoreNotReady
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
+	defer cancel()
+	return sshcfg.ListHosts(ctx, a.sshRunner)
+}
+
+// EnabledHosts 返回启用监控的别名列表（去重；可能包含已从 ssh config 移除的孤儿别名）。
+func (a *App) EnabledHosts() []string {
 	if a.store == nil {
 		return nil
 	}
-	return a.store.Servers()
+	return a.store.EnabledHosts()
 }
 
-// AddServer 新增一个服务器，返回带 ID 的副本。
-func (a *App) AddServer(s config.Server) (config.Server, error) {
-	if a.store == nil {
-		return config.Server{}, errStoreNotReady
-	}
-	created, err := a.store.AddServer(s)
-	if err != nil {
-		return config.Server{}, err
-	}
-	a.syncEngineServers()
-	return created, nil
-}
-
-// UpdateServer 更新现有服务器（按 ID）。
-func (a *App) UpdateServer(s config.Server) error {
+// SetHostEnabled 启用/停用一个别名的监控并持久化。on=true 触发 engine 启动该 host 的连接；
+// on=false 触发 engine 断开并取消其所有 forward。
+//
+// 调用本方法不会重新列举 ssh config — 用 ReloadSSHConfig 强制刷新。
+func (a *App) SetHostEnabled(alias string, on bool) error {
 	if a.store == nil {
 		return errStoreNotReady
 	}
-	if err := a.store.UpdateServer(s); err != nil {
+	if err := a.store.SetHostEnabled(alias, on); err != nil {
 		return err
 	}
-	a.syncEngineServers()
-	return nil
+	return a.applyEnabledHosts()
 }
 
-// DeleteServer 删除一个服务器。
-func (a *App) DeleteServer(id string) error {
-	if a.store == nil {
-		return errStoreNotReady
-	}
-	if err := a.store.DeleteServer(id); err != nil {
-		return err
-	}
-	a.syncEngineServers()
-	return nil
+// ReloadSSHConfig 重新读取 ~/.ssh/config，更新 engine 应监控的 host 列表。
+// 启用集合不变（孤儿别名状态保留，同名再现自动恢复）。
+func (a *App) ReloadSSHConfig() error {
+	return a.applyEnabledHosts()
 }
 
-// TestServer 同步建立一次 SSH 连接并关闭，返回错误说明。
-func (a *App) TestServer(id string) error {
-	if a.store == nil {
+// TestHost 试连一个别名：ssh -G 解析 + 启动临时 master + -O check + -O exit。
+// 用于"试连接"按钮，不持久化任何状态。
+func (a *App) TestHost(alias string) error {
+	if a.sshRunner == nil {
 		return errStoreNotReady
 	}
-	s, ok := a.store.GetServer(id)
-	if !ok {
-		return fmt.Errorf("server %s not found", id)
+	if alias == "" {
+		return errors.New("empty alias")
 	}
 	ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
 	defer cancel()
-	c := sshpool.NewClient(s)
+	host, err := sshcfg.Resolve(ctx, a.sshRunner, alias)
+	if err != nil {
+		return err
+	}
+	c := sshctl.NewClient(host, sshctl.NewDefaultRunner(), a.controlDir)
 	if err := c.Connect(ctx); err != nil {
 		return err
 	}
@@ -138,7 +168,7 @@ func (a *App) TestServer(id string) error {
 
 // --- Wails 绑定: 配置 ---
 
-// GetConfig 返回完整配置（含规则）。
+// GetConfig 返回完整配置（含规则 + 启用集合）。
 func (a *App) GetConfig() config.Config {
 	if a.store == nil {
 		return config.DefaultConfig()
@@ -160,27 +190,29 @@ func (a *App) UpdateRules(r config.Rules) error {
 	return nil
 }
 
-// UpdateScanInterval 调整扫描周期（秒）。
+// UpdateScanInterval 调整扫描周期（秒），下次重启生效。
 func (a *App) UpdateScanInterval(sec int) error {
 	if a.store == nil {
 		return errStoreNotReady
 	}
 	return a.store.UpdateScanInterval(sec)
-	// 注：当前调度循环周期在 StartAll 时绑定；下次重启生效。
 	// TODO(M8+): 支持运行时动态更新调度周期。
 }
 
 // --- Wails 绑定: 运行控制 ---
 
-// StartAll 启动所有 enabled 服务器的转发。
+// StartAll 启动所有 enabled host 的连接 + 扫描循环。
 func (a *App) StartAll() error {
-	if a.engine != nil {
-		return a.engine.StartAll(a.ctx)
+	if a.engine == nil {
+		return nil
 	}
-	return nil
+	if err := a.engine.StartAll(a.ctx); err != nil {
+		return err
+	}
+	return a.applyEnabledHosts()
 }
 
-// StopAll 停止所有转发。
+// StopAll 停止所有连接与转发。
 func (a *App) StopAll() error {
 	if a.engine != nil {
 		return a.engine.StopAll()
@@ -197,6 +229,7 @@ func (a *App) ScanNow() error {
 }
 
 // ToggleForward 临时启用/禁用某端口转发。
+// TODO(M7+): 接入 forced 集合后下次 diff 忽略该端口。
 func (a *App) ToggleForward(serverID string, port int, on bool) error {
 	if a.engine != nil {
 		return a.engine.ToggleForward(serverID, port, on)
@@ -212,14 +245,36 @@ func (a *App) GetSnapshot() []model.Forward {
 	return nil
 }
 
-// syncEngineServers 把 store 中的最新 server 列表热推给 engine。
-func (a *App) syncEngineServers() {
+// --- 内部 ---
+
+// applyEnabledHosts 把 ListHosts() ∩ EnabledHosts() 推给 engine。
+func (a *App) applyEnabledHosts() error {
 	if a.engine == nil || a.store == nil {
-		return
+		return nil
 	}
-	if err := a.engine.ApplyServers(a.store.Servers()); err != nil {
+	hosts, err := a.ListHosts()
+	if err != nil {
+		// 列举失败也要继续：用空列表 → engine 会关掉所有连接。
+		// 这种情况通常是 ssh config 不存在；同步给 engine 是一致的语义。
+		log.Printf("list hosts: %v", err)
+		hosts = nil
+	}
+	enabled := a.store.EnabledHosts()
+	enabledSet := make(map[string]bool, len(enabled))
+	for _, alias := range enabled {
+		enabledSet[alias] = true
+	}
+	var filtered []sshcfg.Host
+	for _, h := range hosts {
+		if enabledSet[h.Alias] {
+			filtered = append(filtered, h)
+		}
+	}
+	if err := a.engine.ApplyServers(filtered); err != nil {
 		log.Printf("ApplyServers: %v", err)
+		return fmt.Errorf("apply servers: %w", err)
 	}
+	return nil
 }
 
 var errStoreNotReady = errors.New("app: config store not initialized; Startup must run first")

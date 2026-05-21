@@ -1,9 +1,11 @@
-// Command verify_e2e 是端到端验证脚本：不依赖 wails GUI，直接装配 engine + sshpool +
-// scan 跑真实链路，连远端 ubt，扫描端口，启动 forward，并实际 TCP 连接本地转发端口验证通路。
+// Command verify_e2e 是端到端验证脚本：不依赖 wails GUI，直接装配 engine + sshctl +
+// scan 跑真实链路，连远端 host，扫描端口，启动 forward，并实际 TCP 连接本地转发端口验证通路。
 //
-// 用法：
+// 用法（以 ssh config 里的别名为单位 — 与 GUI 同源）：
 //
-//	go run ./cmd/verify_e2e -host 192.168.31.55 -user ubuntu -offset 50000
+//	go run ./cmd/verify_e2e -alias ubt
+//
+// 前提：~/.ssh/config 里有该别名，且 `ssh <alias>` 能直接连通（host key 已信任、认证已配好）。
 package main
 
 import (
@@ -14,6 +16,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -24,7 +27,8 @@ import (
 	"auto-port-forward/internal/events"
 	"auto-port-forward/internal/model"
 	"auto-port-forward/internal/scan"
-	"auto-port-forward/internal/sshpool"
+	"auto-port-forward/internal/sshcfg"
+	"auto-port-forward/internal/sshctl"
 )
 
 // stdoutEmitter 在 stdout 打印所有事件，方便观察。
@@ -39,56 +43,60 @@ func (stdoutEmitter) Emit(_ context.Context, name string, data any) {
 
 func main() {
 	var (
-		host    = flag.String("host", "192.168.31.55", "remote ssh host")
-		port    = flag.Int("port", 22, "remote ssh port")
-		user    = flag.String("user", "ubuntu", "remote ssh user")
-		auth    = flag.String("auth", "ssh_agent", "auth method: ssh_agent | ssh_key | password")
-		keyPath = flag.String("key", "", "private key path (auth=ssh_key)")
-		offset  = flag.Int("offset", 50000, "local port offset")
+		alias   = flag.String("alias", "ubt", "ssh config alias to connect")
 		timeout = flag.Duration("timeout", 60*time.Second, "overall E2E timeout")
 	)
 	flag.Parse()
-
-	cfg := config.Config{
-		ScanIntervalSec: 5,
-		Servers: []config.Server{
-			{
-				ID:         "verify-ubt",
-				Name:       "verify-ubt",
-				Host:       *host,
-				Port:       *port,
-				User:       *user,
-				AuthMethod: *auth,
-				KeyPath:    *keyPath,
-				HostKey:    "insecure", // 简化验证；生产建议 known_hosts
-				Enabled:    true,
-			},
-		},
-		Rules: config.Rules{
-			ExcludePorts:    []int{22, 53, 80, 443, 111, 631},
-			LocalPortOffset: *offset,
-		},
-	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	ctx, cancelT := context.WithTimeout(ctx, *timeout)
 	defer cancelT()
 
-	eng := engine.New(cfg, stdoutEmitter{}, engine.Deps{
-		ClientFactory: func(s config.Server) engine.ClientHandle { return sshpool.NewClient(s) },
-		LocalScan:     scan.ScanLocal,
-		IsRoot:        os.Geteuid() == 0,
-	})
+	// 1. 解析 alias → effective host 配置（通过系统 ssh -G）。
+	runner := sshcfg.NewDefaultRunner()
+	host, err := sshcfg.Resolve(ctx, runner, *alias)
+	if err != nil {
+		log.Fatalf("resolve alias %q: %v", *alias, err)
+	}
+	log.Printf("[E2E] resolved %q → %s@%s:%d", *alias, host.User, host.HostName, host.Port)
 
-	log.Printf("[E2E] starting engine — connect to %s@%s:%d offset=+%d", *user, *host, *port, *offset)
+	// 2. controlDir：与 GUI 默认路径一致，便于排错。
+	userCfgDir, err := os.UserConfigDir()
+	if err != nil {
+		userCfgDir = "."
+	}
+	controlDir := filepath.Join(userCfgDir, "auto-port-forward", "ctl")
+
+	// 3. 装配 engine — ClientFactory 直接产 sshctl.NewClient。
+	cfg := config.Config{
+		ScanIntervalSec: 5,
+		Rules: config.Rules{
+			ExcludePorts: []int{22, 53, 80, 443, 111, 631},
+		},
+		EnabledHosts: []string{*alias},
+	}
+	sshctlRunner := sshctl.NewDefaultRunner()
+	eng := engine.New(cfg, stdoutEmitter{}, engine.Deps{
+		ClientFactory: func(h sshcfg.Host) engine.ClientHandle {
+			return sshctl.NewClient(h, sshctlRunner, controlDir)
+		},
+		LocalScan: scan.ScanLocal,
+		IsRoot:    os.Geteuid() == 0,
+	})
+	// 把 host 注入 enabled 集合 → engine 会 Connect 之。
+	if err := eng.ApplyServers([]sshcfg.Host{host}); err != nil {
+		log.Fatalf("ApplyServers: %v", err)
+	}
+
+	log.Printf("[E2E] starting engine")
 	if err := eng.StartAll(ctx); err != nil {
 		log.Fatalf("StartAll: %v", err)
 	}
 	defer eng.StopAll()
 
-	// 等连接就绪再 ScanNow（最多 8s）。
-	if err := waitConnected(ctx, eng, 8*time.Second); err != nil {
+	// 等连接就绪再 ScanNow（最多 12s — ControlMaster 首连可能比单次 dial 慢）。
+	if err := waitConnected(ctx, eng, 12*time.Second); err != nil {
 		log.Fatalf("wait connected: %v", err)
 	}
 	log.Println("[E2E] ssh connected; triggering scan")
