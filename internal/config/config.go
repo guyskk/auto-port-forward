@@ -26,10 +26,14 @@ type Rules struct {
 //
 // EnabledHosts 是启用监控的 SSH config 别名集合：
 // 即使该别名当前已从 ssh config 移除，也保留状态，同名再现时自动恢复。
+//
+// DisabledPorts 记录每个 alias 被用户明确禁用的远端端口集合（已去重已排序）。
+// 与 EnabledHosts 一样，孤儿别名状态保留，同名再现时禁用集合自动恢复。
 type Config struct {
-	ScanIntervalSec int      `toml:"scan_interval_sec" json:"scan_interval_sec"`
-	Rules           Rules    `toml:"rules" json:"rules"`
-	EnabledHosts    []string `toml:"enabled_hosts" json:"enabled_hosts"`
+	ScanIntervalSec int              `toml:"scan_interval_sec" json:"scan_interval_sec"`
+	Rules           Rules            `toml:"rules" json:"rules"`
+	EnabledHosts    []string         `toml:"enabled_hosts" json:"enabled_hosts"`
+	DisabledPorts   map[string][]int `toml:"disabled_ports" json:"disabled_ports"`
 }
 
 // DefaultConfig 返回带默认值的 Config。
@@ -40,7 +44,8 @@ func DefaultConfig() Config {
 			ExcludePorts:  []int{22, 53, 80, 443, 111, 631},
 			ExcludeRanges: nil,
 		},
-		EnabledHosts: nil,
+		EnabledHosts:  nil,
+		DisabledPorts: nil,
 	}
 }
 

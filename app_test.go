@@ -270,3 +270,40 @@ func TestApp_UpdateScanInterval_persists(t *testing.T) {
 		t.Errorf("after reload, ScanIntervalSec = %d, want 30", got)
 	}
 }
+
+// 测试: ToggleForward(on=false) 写入 store.DisabledPorts，跨重启保留。
+func TestApp_ToggleForward_persists(t *testing.T) {
+	a, path := newTestApp(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := a.setup(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	defer a.Shutdown(ctx)
+
+	if err := a.ToggleForward("ubt", 8080, false); err != nil {
+		t.Fatalf("ToggleForward off: %v", err)
+	}
+	got := a.GetConfig().DisabledPorts["ubt"]
+	if len(got) != 1 || got[0] != 8080 {
+		t.Errorf("DisabledPorts[ubt] = %#v, want [8080]", got)
+	}
+
+	a2, _ := newTestApp(t)
+	if err := a2.setup(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	defer a2.Shutdown(ctx)
+	got2 := a2.GetConfig().DisabledPorts["ubt"]
+	if len(got2) != 1 || got2[0] != 8080 {
+		t.Errorf("after reload, DisabledPorts[ubt] = %#v, want [8080]", got2)
+	}
+
+	// 重启后再次启用 → 应清空。
+	if err := a2.ToggleForward("ubt", 8080, true); err != nil {
+		t.Fatalf("ToggleForward on: %v", err)
+	}
+	if got := a2.GetConfig().DisabledPorts["ubt"]; len(got) != 0 {
+		t.Errorf("after re-enable, DisabledPorts[ubt] = %#v, want empty", got)
+	}
+}

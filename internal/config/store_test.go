@@ -183,3 +183,118 @@ func TestStore_SetHostEnabled_orphanStatePreserved(t *testing.T) {
 		t.Errorf("orphan state lost: %#v", got)
 	}
 }
+
+// SetForwardEnabled(on=false) 把端口加入禁用列表并持久化。
+func TestStore_SetForwardEnabled_offPersists(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	s, _ := NewStore(path)
+	if err := s.SetForwardEnabled("ubt", 8080, false); err != nil {
+		t.Fatalf("SetForwardEnabled: %v", err)
+	}
+	reloaded, _ := Load(path)
+	got := reloaded.DisabledPorts["ubt"]
+	if len(got) != 1 || got[0] != 8080 {
+		t.Errorf("DisabledPorts not persisted: %#v", reloaded.DisabledPorts)
+	}
+}
+
+// SetForwardEnabled(on=false) 重复禁用不会重复出现，且禁用列表升序排序。
+func TestStore_SetForwardEnabled_offIsIdempotentAndSorted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	s, _ := NewStore(path)
+	_ = s.SetForwardEnabled("ubt", 9090, false)
+	_ = s.SetForwardEnabled("ubt", 8080, false)
+	_ = s.SetForwardEnabled("ubt", 9090, false) // 重复
+	got := s.DisabledPorts("ubt")
+	if len(got) != 2 || got[0] != 8080 || got[1] != 9090 {
+		t.Errorf("DisabledPorts = %#v, want sorted [8080 9090] without duplicates", got)
+	}
+}
+
+// SetForwardEnabled(on=true) 把端口从禁用列表中移除。
+func TestStore_SetForwardEnabled_onRemoves(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	s, _ := NewStore(path)
+	_ = s.SetForwardEnabled("ubt", 8080, false)
+	_ = s.SetForwardEnabled("ubt", 9090, false)
+	if err := s.SetForwardEnabled("ubt", 8080, true); err != nil {
+		t.Fatal(err)
+	}
+	got := s.DisabledPorts("ubt")
+	if len(got) != 1 || got[0] != 9090 {
+		t.Errorf("DisabledPorts after on = %#v, want [9090]", got)
+	}
+}
+
+// SetForwardEnabled(on=true) 对未禁用端口是 no-op，不报错。
+func TestStore_SetForwardEnabled_onMissingIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	s, _ := NewStore(path)
+	if err := s.SetForwardEnabled("ubt", 8080, true); err != nil {
+		t.Errorf("on-missing should not error: %v", err)
+	}
+	if got := s.DisabledPorts("ubt"); len(got) != 0 {
+		t.Errorf("DisabledPorts should be empty, got %#v", got)
+	}
+}
+
+// 多 alias 隔离：禁用 a 的端口不影响 b。
+func TestStore_SetForwardEnabled_aliasIsolation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	s, _ := NewStore(path)
+	_ = s.SetForwardEnabled("a", 8080, false)
+	_ = s.SetForwardEnabled("b", 9090, false)
+	if got := s.DisabledPorts("a"); len(got) != 1 || got[0] != 8080 {
+		t.Errorf("a DisabledPorts = %#v", got)
+	}
+	if got := s.DisabledPorts("b"); len(got) != 1 || got[0] != 9090 {
+		t.Errorf("b DisabledPorts = %#v", got)
+	}
+}
+
+// 跨重启持久化：禁用列表能正常 round-trip。
+func TestStore_SetForwardEnabled_orphanStatePreserved(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	s, _ := NewStore(path)
+	_ = s.SetForwardEnabled("transient", 9000, false)
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := s2.DisabledPorts("transient")
+	if len(got) != 1 || got[0] != 9000 {
+		t.Errorf("orphan disabled port lost: %#v", got)
+	}
+}
+
+// DisabledPorts(alias) 返回拷贝，调用方修改不影响内部。
+func TestStore_DisabledPorts_returnsCopy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	s, _ := NewStore(path)
+	_ = s.SetForwardEnabled("ubt", 8080, false)
+	got := s.DisabledPorts("ubt")
+	got[0] = 9999
+	if s.DisabledPorts("ubt")[0] == 9999 {
+		t.Errorf("DisabledPorts leaked internal state")
+	}
+}
+
+// 当某 alias 的所有禁用端口都被启用回来后，map key 应被清除（避免空数组堆积）。
+func TestStore_SetForwardEnabled_emptyAliasIsCleanedUp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	s, _ := NewStore(path)
+	_ = s.SetForwardEnabled("ubt", 8080, false)
+	_ = s.SetForwardEnabled("ubt", 8080, true)
+	snap := s.Snapshot()
+	if _, ok := snap.DisabledPorts["ubt"]; ok {
+		t.Errorf("empty alias should be removed from DisabledPorts, got %#v", snap.DisabledPorts)
+	}
+}
