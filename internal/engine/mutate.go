@@ -7,13 +7,58 @@ import (
 	"auto-port-forward/internal/sshcfg"
 )
 
-// ToggleForward 临时强制启用 / 禁用某端口转发。
-// TODO(M7+): 接入 forced 集合后下次 diff 忽略该端口。
+// ToggleForward 持久化用户对单个端口的启用/禁用意图，并在运行态触发一次重扫。
+//
+// engine 只更新自身内存中的 cfg.DisabledPorts；持久化由调用方（app.go）通过 store 完成。
+// 这与 UpdateRules / SetHostEnabled 的现有分层一致：engine 管运行态，store 管落盘。
+//
+// on=true:  从禁用集合中移除该端口（幂等）。
+// on=false: 加入禁用集合（去重排序，幂等）。
+//
+// serverID 实质就是 alias（与 EnabledHosts / scanServer 中的 cfg.Alias 同义）。
 func (e *Engine) ToggleForward(serverID string, port int, on bool) error {
-	_ = serverID
-	_ = port
-	_ = on
+	e.mu.Lock()
+	if e.cfg.DisabledPorts == nil {
+		e.cfg.DisabledPorts = map[string][]int{}
+	}
+	cur := append([]int(nil), e.cfg.DisabledPorts[serverID]...)
+	next := toggleInIntSet(cur, port, !on)
+	if len(next) == 0 {
+		delete(e.cfg.DisabledPorts, serverID)
+	} else {
+		e.cfg.DisabledPorts[serverID] = next
+	}
+	running := e.running
+	e.mu.Unlock()
+	if running {
+		_ = e.ScanNow(context.Background())
+	}
 	return nil
+}
+
+// toggleInIntSet 把 port 是否在 set 内调整为 want。返回值去重升序。
+// 与 config.toggleInSet 同语义，独立实现以避免跨包依赖。
+func toggleInIntSet(set []int, port int, want bool) []int {
+	has := false
+	out := make([]int, 0, len(set)+1)
+	for _, p := range set {
+		if p == port {
+			if has {
+				continue
+			}
+			has = true
+			if want {
+				out = append(out, p)
+			}
+			continue
+		}
+		out = append(out, p)
+	}
+	if want && !has {
+		out = append(out, port)
+	}
+	sortInts(out)
+	return out
 }
 
 // UpdateRules 替换规则；触发一次 diff 重算。

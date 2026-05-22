@@ -44,6 +44,70 @@ func (s *Store) EnabledHosts() []string {
 	return cloneStrings(s.cfg.EnabledHosts)
 }
 
+// DisabledPorts 返回某 alias 的禁用端口快照（已排序、已去重的拷贝；alias 不存在返回 []int{}）。
+func (s *Store) DisabledPorts(alias string) []int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneInts(s.cfg.DisabledPorts[alias])
+}
+
+// SetForwardEnabled 设置 alias:port 是否启用并持久化。
+//
+// on=true:  从 alias 的禁用列表中移除该端口（不存在则 no-op，幂等）。
+// on=false: 加入 alias 的禁用列表（已存在则 no-op，幂等）。
+//
+// 禁用列表存储时去重并按升序排序，保证 JSON / TOML 输出稳定。
+// 当某 alias 的禁用列表清空时，从 map 中删除该 key，避免空数组堆积。
+func (s *Store) SetForwardEnabled(alias string, port int, on bool) error {
+	s.mu.Lock()
+	if s.cfg.DisabledPorts == nil {
+		s.cfg.DisabledPorts = map[string][]int{}
+	}
+	cur := append([]int(nil), s.cfg.DisabledPorts[alias]...)
+	next := toggleInSet(cur, port, !on)
+	if len(next) == 0 {
+		delete(s.cfg.DisabledPorts, alias)
+	} else {
+		s.cfg.DisabledPorts[alias] = next
+	}
+	cfg := cloneConfig(s.cfg)
+	s.mu.Unlock()
+	return Save(s.path, cfg)
+}
+
+// toggleInSet 把 port 是否在 set 内调整为 want（true=应在内，false=应不在内）。
+// 输入 set 不必有序；返回值去重且升序排序。
+func toggleInSet(set []int, port int, want bool) []int {
+	has := false
+	out := make([]int, 0, len(set)+1)
+	for _, p := range set {
+		if p == port {
+			if has {
+				continue // 去重
+			}
+			has = true
+			if want {
+				out = append(out, p)
+			}
+			continue
+		}
+		out = append(out, p)
+	}
+	if want && !has {
+		out = append(out, port)
+	}
+	sortInts(out)
+	return out
+}
+
+func sortInts(xs []int) {
+	for i := 1; i < len(xs); i++ {
+		for j := i; j > 0 && xs[j-1] > xs[j]; j-- {
+			xs[j-1], xs[j] = xs[j], xs[j-1]
+		}
+	}
+}
+
 // SetHostEnabled 设置某 SSH 别名是否启用监控并持久化。
 //
 // on=true: 别名不在列表则追加（去重，幂等）。
@@ -101,6 +165,17 @@ func cloneConfig(c Config) Config {
 	out := c
 	out.Rules = cloneRules(c.Rules)
 	out.EnabledHosts = cloneStrings(c.EnabledHosts)
+	out.DisabledPorts = cloneDisabledPorts(c.DisabledPorts)
+	return out
+}
+
+// cloneDisabledPorts 深拷贝 alias→ports map；nil 输入返回 map[string][]int{}
+// （非 nil 空 map），保证 JSON 序列化为 `{}` 而非 `null`，便于前端无脑 `obj[alias]`。
+func cloneDisabledPorts(in map[string][]int) map[string][]int {
+	out := make(map[string][]int, len(in))
+	for k, v := range in {
+		out[k] = cloneInts(v)
+	}
 	return out
 }
 

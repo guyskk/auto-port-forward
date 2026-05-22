@@ -228,9 +228,21 @@ func (a *App) ScanNow() error {
 	return nil
 }
 
-// ToggleForward 临时启用/禁用某端口转发。
-// TODO(M7+): 接入 forced 集合后下次 diff 忽略该端口。
+// ToggleForward 持久化用户对单个端口的启用/禁用意图。
+//
+// on=false: 把 serverID:port 加入 store.DisabledPorts；重启后仍然记得，
+//           reconcile 跳过该端口、若在运行则被 cancel。
+// on=true:  从禁用集合中移除该端口，下次扫描如该端口仍 listen 则恢复 forwarding。
+//
+// store 写盘失败时不调用 engine；engine 失败时不回滚 store（与 SetHostEnabled 同语义，
+// 失败留待下次 scan 自然纠正）。
 func (a *App) ToggleForward(serverID string, port int, on bool) error {
+	if a.store == nil {
+		return errStoreNotReady
+	}
+	if err := a.store.SetForwardEnabled(serverID, port, on); err != nil {
+		return err
+	}
 	if a.engine != nil {
 		return a.engine.ToggleForward(serverID, port, on)
 	}

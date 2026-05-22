@@ -180,3 +180,66 @@ func TestReconcile_privilegedConflictNonRoot(t *testing.T) {
 		t.Errorf("desired should be empty for conflict_priv, got %v", out.DesiredPorts)
 	}
 }
+
+// 禁用端口：UI 上仍然可见，但状态为 excluded，不进 DesiredPorts。
+func TestReconcile_disabledPortBecomesExcluded(t *testing.T) {
+	out := Reconcile(Inputs{
+		ServerID:      "ubt",
+		Remote:        []model.RemotePort{rp(8080, "0.0.0.0"), rp(9090, "0.0.0.0")},
+		DisabledPorts: map[int]bool{8080: true},
+		IsRoot:        true,
+	})
+	got := sortFwds(out.Snapshot)
+	if len(got) != 2 {
+		t.Fatalf("snapshot len = %d, want 2", len(got))
+	}
+	var s8080, s9090 model.PortStatus
+	for _, f := range got {
+		if f.RemotePort == 8080 {
+			s8080 = f.Status
+		}
+		if f.RemotePort == 9090 {
+			s9090 = f.Status
+		}
+	}
+	if s8080 != model.StatusExcluded {
+		t.Errorf("8080 status = %q, want excluded", s8080)
+	}
+	if s9090 != model.StatusPending {
+		t.Errorf("9090 status = %q, want pending", s9090)
+	}
+	if !reflect.DeepEqual(out.DesiredPorts, []int{9090}) {
+		t.Errorf("desired = %v, want [9090]", out.DesiredPorts)
+	}
+}
+
+// 禁用某端口同时它当前在跑 → 必须 diff 出 del，以便 engine 停掉它。
+func TestReconcile_disabledRunningPortGetsDeleted(t *testing.T) {
+	out := Reconcile(Inputs{
+		ServerID:       "ubt",
+		Remote:         []model.RemotePort{rp(8080, "0.0.0.0")},
+		CurrentForward: map[int]bool{8080: true},
+		DisabledPorts:  map[int]bool{8080: true},
+		IsRoot:         true,
+	})
+	if out.Snapshot[0].Status != model.StatusExcluded {
+		t.Errorf("status = %q, want excluded", out.Snapshot[0].Status)
+	}
+	if len(out.Diff) != 1 || out.Diff[0].Kind != "del" || out.Diff[0].Port != 8080 {
+		t.Errorf("diff = %#v, want one del op for 8080", out.Diff)
+	}
+}
+
+// 禁用列表优先于其他状态（即使被本地占用，也是禁用而不是 conflict —— 用户意图覆盖一切）。
+func TestReconcile_disabledTakesPrecedenceOverConflict(t *testing.T) {
+	out := Reconcile(Inputs{
+		ServerID:      "ubt",
+		Remote:        []model.RemotePort{rp(8080, "0.0.0.0")},
+		LocalOccupied: map[int]LocalOwnership{8080: {Occupied: true, BySelf: false}},
+		DisabledPorts: map[int]bool{8080: true},
+		IsRoot:        true,
+	})
+	if out.Snapshot[0].Status != model.StatusExcluded {
+		t.Errorf("status = %q, want excluded", out.Snapshot[0].Status)
+	}
+}
