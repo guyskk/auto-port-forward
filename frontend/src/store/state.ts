@@ -14,6 +14,12 @@ import {
 } from '../types'
 import type { Config, Forward, Host, ServerStatus } from '../types'
 
+// toArray 把后端可能回传的 null / undefined（来自 Go nil slice 序列化）兜底为 []，
+// 避免 Vue 模板调用数组方法（如 .includes / .filter）时抛 TypeError 导致整页空白。
+function toArray<T>(v: T[] | null | undefined): T[] {
+  return Array.isArray(v) ? v : []
+}
+
 export const useAppStore = defineStore('app', () => {
   const hosts = ref<Host[]>([])
   const enabledHosts = ref<string[]>([])
@@ -34,9 +40,9 @@ export const useAppStore = defineStore('app', () => {
         api.EnabledHosts(),
       ])
       config.value = cfg
-      forwards.value = snap
-      hosts.value = hostList
-      enabledHosts.value = enabled
+      forwards.value = toArray(snap)
+      hosts.value = toArray(hostList)
+      enabledHosts.value = toArray(enabled)
     } finally {
       loading.value = false
     }
@@ -45,12 +51,12 @@ export const useAppStore = defineStore('app', () => {
   async function scanNow(): Promise<void> {
     await api.ScanNow()
     lastScanAt.value = Date.now()
-    forwards.value = await api.GetSnapshot()
+    forwards.value = toArray(await api.GetSnapshot())
   }
 
   async function setHostEnabled(alias: string, on: boolean): Promise<void> {
     await api.SetHostEnabled(alias, on)
-    enabledHosts.value = await api.EnabledHosts()
+    enabledHosts.value = toArray(await api.EnabledHosts())
     // 关闭某 host 后，立刻清掉它的 forward 行；开启则等下一次扫描自然填充。
     if (!on) {
       forwards.value = forwards.value.filter((f) => f.server_id !== alias)
@@ -59,7 +65,7 @@ export const useAppStore = defineStore('app', () => {
 
   async function reloadSSHConfig(): Promise<void> {
     await api.ReloadSSHConfig()
-    hosts.value = await api.ListHosts()
+    hosts.value = toArray(await api.ListHosts())
   }
 
   async function testHost(alias: string): Promise<void> {
@@ -78,12 +84,12 @@ export const useAppStore = defineStore('app', () => {
 
   function subscribe(): void {
     onEvent(EVENT_STATE_UPDATE, (data) => {
-      forwards.value = data as Forward[]
+      forwards.value = toArray(data as Forward[] | null | undefined)
       lastScanAt.value = Date.now()
     })
     onEvent(EVENT_FORWARD_UPDATE, () => {
       // 单条变化：拉一次完整快照，保持简单。
-      api.GetSnapshot().then((s) => (forwards.value = s))
+      api.GetSnapshot().then((s) => (forwards.value = toArray(s)))
     })
     onEvent(EVENT_SCAN_ERROR, (data) => {
       const d = data as { error?: string }

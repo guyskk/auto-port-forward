@@ -105,21 +105,30 @@ func cloneConfig(c Config) Config {
 }
 
 func cloneRules(r Rules) Rules {
-	out := r
-	if r.ExcludePorts != nil {
-		out.ExcludePorts = append([]int(nil), r.ExcludePorts...)
+	return Rules{
+		ExcludePorts:  cloneInts(r.ExcludePorts),
+		ExcludeRanges: cloneSpans(r.ExcludeRanges),
 	}
-	if r.ExcludeRanges != nil {
-		out.ExcludeRanges = append([]Span(nil), r.ExcludeRanges...)
-	}
+}
+
+// cloneStrings 返回输入的拷贝；输入为 nil 时返回 []string{} 而非 nil，
+// 保证经 JSON 序列化后字段是 [] 而非 null，前端可以安全调用 .includes()。
+func cloneStrings(in []string) []string {
+	out := make([]string, len(in))
+	copy(out, in)
 	return out
 }
 
-func cloneStrings(in []string) []string {
-	if in == nil {
-		return nil
-	}
-	out := make([]string, len(in))
+// cloneInts 同 cloneStrings 的语义：nil → [] 而非 nil。
+func cloneInts(in []int) []int {
+	out := make([]int, len(in))
+	copy(out, in)
+	return out
+}
+
+// cloneSpans 同 cloneStrings 的语义：nil → [] 而非 nil。
+func cloneSpans(in []Span) []Span {
+	out := make([]Span, len(in))
 	copy(out, in)
 	return out
 }
