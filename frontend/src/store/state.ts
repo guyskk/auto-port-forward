@@ -1,10 +1,16 @@
-// store/state.ts —— Pinia 全局状态。
+// store/state.ts —— 薄 Pinia adapter：把 core/ 的 state + reducer + selectors + intents
+// 编织成响应式 store。
 //
-// useAppStore() 暴露 hosts / enabledHosts / forwards / config / serverStatus；
-// initAppStore() 在 App 挂载时跑一次：拉初始数据、订阅 wails events。
+// 设计要点：
+//   - 单一 shallowRef 持有完整 AppState；reducer 返回 prev 时 ref 不变，
+//     Vue 的 hasChanged(=== Object.is) 检查会跳过依赖触发 → 整个组件树不重渲染。
+//   - 业务模板看到的不是裸 ref，而是 computed —— Vue computed 在依赖 ref 未变时
+//     直接缓存输出值返回，selector 内部 memoize 配合做到端到端"零浪费重算"。
+//   - 所有副作用（api 调用、事件订阅）由 intents/subscribe 闭包持有；
+//     模板只能 dispatch event 触发 reducer，从这个意义上 store 是 reducer 的 Vue 壳。
 
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, shallowRef } from 'vue'
 import { api, onEvent } from '../api/wails'
 import {
   EVENT_FORWARD_UPDATE,
@@ -12,98 +18,89 @@ import {
   EVENT_SERVER_STATUS,
   EVENT_STATE_UPDATE,
 } from '../types'
-import type { Config, Forward, Host, ServerStatus } from '../types'
+import { initialState } from '../core/state'
+import { applyEvent } from '../core/reducer'
+import { createIntents } from '../core/intent'
+import {
+  byServerForwards,
+  forwardsByHost,
+  hostsView,
+} from '../core/selectors'
+import type {
+  Event,
+  Forward,
+  PortStatus,
+  ServerStatus,
+} from '../core/types'
 
-// toArray 把后端可能回传的 null / undefined（来自 Go nil slice 序列化）兜底为 []，
-// 避免 Vue 模板调用数组方法（如 .includes / .filter）时抛 TypeError 导致整页空白。
 function toArray<T>(v: T[] | null | undefined): T[] {
   return Array.isArray(v) ? v : []
 }
 
 export const useAppStore = defineStore('app', () => {
-  const hosts = ref<Host[]>([])
-  const enabledHosts = ref<string[]>([])
-  const forwards = ref<Forward[]>([])
-  const config = ref<Config | null>(null)
-  const loading = ref(false)
-  const lastScanAt = ref<number | null>(null)
-  const lastError = ref<string>('')
-  const serverStatus = ref<Record<string, ServerStatus>>({})
+  const state = shallowRef(initialState())
 
-  async function refresh(): Promise<void> {
-    loading.value = true
-    try {
-      const [cfg, snap, hostList, enabled] = await Promise.all([
-        api.GetConfig(),
-        api.GetSnapshot(),
-        api.ListHosts(),
-        api.EnabledHosts(),
-      ])
-      config.value = cfg
-      forwards.value = toArray(snap)
-      hosts.value = toArray(hostList)
-      enabledHosts.value = toArray(enabled)
-    } finally {
-      loading.value = false
-    }
+  function dispatch(ev: Event): void {
+    state.value = applyEvent(state.value, ev)
   }
 
-  async function scanNow(): Promise<void> {
-    await api.ScanNow()
-    lastScanAt.value = Date.now()
-    forwards.value = toArray(await api.GetSnapshot())
-  }
-
-  async function setHostEnabled(alias: string, on: boolean): Promise<void> {
-    await api.SetHostEnabled(alias, on)
-    enabledHosts.value = toArray(await api.EnabledHosts())
-    // 关闭某 host 后，立刻清掉它的 forward 行；开启则等下一次扫描自然填充。
-    if (!on) {
-      forwards.value = forwards.value.filter((f) => f.server_id !== alias)
-    }
-  }
-
-  async function reloadSSHConfig(): Promise<void> {
-    await api.ReloadSSHConfig()
-    hosts.value = toArray(await api.ListHosts())
-  }
-
-  async function testHost(alias: string): Promise<void> {
-    await api.TestHost(alias)
-  }
-
-  async function updateRules(r: Config['rules']): Promise<void> {
-    await api.UpdateRules(r)
-    config.value = await api.GetConfig()
-  }
-
-  async function updateScanInterval(sec: number): Promise<void> {
-    await api.UpdateScanInterval(sec)
-    config.value = await api.GetConfig()
-  }
+  const intents = createIntents(api, dispatch)
 
   function subscribe(): void {
     onEvent(EVENT_STATE_UPDATE, (data) => {
-      forwards.value = toArray(data as Forward[] | null | undefined)
-      lastScanAt.value = Date.now()
+      dispatch({
+        kind: 'state-update',
+        forwards: toArray(data as Forward[] | null | undefined),
+      })
     })
-    onEvent(EVENT_FORWARD_UPDATE, () => {
-      // 单条变化：拉一次完整快照，保持简单。
-      api.GetSnapshot().then((s) => (forwards.value = toArray(s)))
+    // 后端的 EventForwardUpdate 已经携带 {server_id, remote_port, status, error}，
+    // 不再额外拉 GetSnapshot —— 这是治理"一次状态变化 → 一次全量拉取"的关键路径。
+    onEvent(EVENT_FORWARD_UPDATE, (data) => {
+      const d = data as {
+        server_id?: string
+        remote_port?: number
+        status?: string
+        error?: string
+      }
+      if (!d?.server_id || typeof d.remote_port !== 'number') return
+      dispatch({
+        kind: 'forward-update',
+        serverId: d.server_id,
+        port: d.remote_port,
+        status: (d.status as PortStatus) ?? 'pending',
+        error: d.error || '',
+      })
     })
     onEvent(EVENT_SCAN_ERROR, (data) => {
       const d = data as { error?: string }
-      lastError.value = d?.error || 'scan error'
+      dispatch({ kind: 'scan-error', error: d?.error || 'scan error' })
     })
     onEvent(EVENT_SERVER_STATUS, (data) => {
       const s = data as ServerStatus
-      if (s?.server_id) {
-        serverStatus.value = { ...serverStatus.value, [s.server_id]: s }
-      }
+      if (s?.server_id) dispatch({ kind: 'server-status', status: s })
     })
   }
 
+  // 平铺的字段 computed：仅供旧模板代码读，引用相等保证不重渲染。
+  const hosts = computed(() => state.value.hosts)
+  const enabledHosts = computed(() => state.value.enabledHosts)
+  const forwards = computed(() => state.value.forwards)
+  const config = computed(() => state.value.config)
+  const loading = computed(() => state.value.loading)
+  const lastScanAt = computed(() => state.value.lastScanAt)
+  const lastError = computed(() => state.value.lastError)
+  const serverStatus = computed(() => state.value.serverStatus)
+
+  // 派生 computed：在模板里直接用，selector 的 memoize 让等价输入返回相同输出。
+  const byServer = computed(() => byServerForwards(state.value))
+  const hostsViewComp = computed(() => hostsView(state.value))
+
+  function forwardsByAlias(alias: string): ReadonlyArray<Forward> {
+    return forwardsByHost(state.value, alias)
+  }
+
   return {
+    // 基础切片（供逐步迁移；新代码建议用 hostsView / byServer）
     hosts,
     enabledHosts,
     forwards,
@@ -112,13 +109,20 @@ export const useAppStore = defineStore('app', () => {
     lastScanAt,
     lastError,
     serverStatus,
-    refresh,
-    scanNow,
-    setHostEnabled,
-    reloadSSHConfig,
-    testHost,
-    updateRules,
-    updateScanInterval,
+    // 派生视图
+    byServer,
+    hostsView: hostsViewComp,
+    forwardsByAlias,
+    // 用户意图（来自 core/intent.ts，已包含 refresh/scanNow/toggleForward 等）
+    refresh: intents.refresh,
+    scanNow: intents.scanNow,
+    setHostEnabled: intents.setHostEnabled,
+    reloadSSHConfig: intents.reloadSSHConfig,
+    testHost: intents.testHost,
+    updateRules: intents.updateRules,
+    updateScanInterval: intents.updateScanInterval,
+    toggleForward: intents.toggleForward,
+    // 订阅 wails 事件
     subscribe,
   }
 })

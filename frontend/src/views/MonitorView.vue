@@ -6,7 +6,6 @@ import {
   NEmpty,
   NText,
   NTag,
-  NCard,
   NSwitch,
   NCollapse,
   NCollapseItem,
@@ -16,7 +15,8 @@ import {
 import PortTable from '../components/PortTable.vue'
 import { useAppStore } from '../store/state'
 import { zh } from '../i18n/zh'
-import type { Host, ServerConnState } from '../types'
+import type { ServerConnState } from '../types'
+import type { HostView } from '../core/selectors'
 
 const store = useAppStore()
 const message = useMessage()
@@ -26,37 +26,33 @@ const lastScanLabel = computed(() => {
   return new Date(store.lastScanAt).toLocaleTimeString('zh-CN')
 })
 
-// host alias → 是否启用监控
-const isEnabled = (alias: string) => store.enabledHosts.includes(alias)
-
-// host alias → 连接状态字符串
-function connLabel(alias: string): { label: string; type: 'default' | 'success' | 'warning' | 'error' } {
-  const s = store.serverStatus[alias]
-  if (!s) {
-    return { label: zh.conn.unknown, type: 'default' }
-  }
-  const stateMap: Record<ServerConnState, { label: string; type: 'default' | 'success' | 'warning' | 'error' }> = {
-    dialing: { label: zh.conn.dialing, type: 'warning' },
-    connected: { label: zh.conn.connected, type: 'success' },
-    broken: { label: zh.conn.broken, type: 'error' },
-    degraded: { label: zh.conn.degraded, type: 'error' },
-  }
-  return stateMap[s.state] ?? { label: zh.conn.unknown, type: 'default' }
+const STATE_LABELS: Record<
+  ServerConnState,
+  { label: string; type: 'default' | 'success' | 'warning' | 'error' }
+> = {
+  dialing: { label: zh.conn.dialing, type: 'warning' },
+  connected: { label: zh.conn.connected, type: 'success' },
+  broken: { label: zh.conn.broken, type: 'error' },
+  degraded: { label: zh.conn.degraded, type: 'error' },
 }
 
-// host alias → 该 host 下所有 forward 行
-const forwardsOf = (alias: string) => store.forwards.filter((f) => f.server_id === alias)
+function connLabel(h: HostView): { label: string; type: 'default' | 'success' | 'warning' | 'error' } {
+  if (!h.status) return { label: zh.conn.unknown, type: 'default' }
+  return STATE_LABELS[h.status.state] ?? { label: zh.conn.unknown, type: 'default' }
+}
 
-// 连接错误信息（host key 等），用于卡片内 Alert。
-function connError(alias: string): string | null {
-  const s = store.serverStatus[alias]
-  if (!s || !s.error) return null
-  if (s.state === 'connected') return null
-  return s.error
+function connError(h: HostView): string | null {
+  if (!h.status || !h.status.error) return null
+  if (h.status.state === 'connected') return null
+  return h.status.error
 }
 
 async function onScan() {
-  await store.scanNow()
+  try {
+    await store.scanNow()
+  } catch (e) {
+    message.error(String((e as Error)?.message ?? e))
+  }
 }
 
 async function onReload() {
@@ -86,16 +82,24 @@ async function onTestHost(alias: string) {
 }
 
 async function onTogglePort(serverId: string, port: number, on: boolean) {
-  await window.go?.main?.App?.ToggleForward?.(serverId, port, on)
-  await store.scanNow()
+  // 关键性能优化：仅触发后端意图，等待事件回送真实状态。
+  // 移除了原先的 `await store.scanNow()`——避免「一次点击 → 一次 RPC + 一次额外快照拉取
+  // + 一次全量模板重渲染」的雪崩链路。
+  try {
+    await store.toggleForward(serverId, port, on)
+  } catch (e) {
+    message.error(String((e as Error)?.message ?? e))
+  }
 }
 
 // 卡片显示顺序：enabled 优先，再按 alias 字典序。
-const sortedHosts = computed<Host[]>(() => {
-  const list = [...store.hosts]
+// 注意：store.hostsView 已经是 memoized HostView[]——只要底层
+// hosts/enabledHosts/serverStatus 三个 ref 未变，computed 不重算。
+const sortedHosts = computed<HostView[]>(() => {
+  const list = store.hostsView.slice()
   list.sort((a, b) => {
-    const ea = isEnabled(a.alias) ? 0 : 1
-    const eb = isEnabled(b.alias) ? 0 : 1
+    const ea = a.enabled ? 0 : 1
+    const eb = b.enabled ? 0 : 1
     if (ea !== eb) return ea - eb
     return a.alias.localeCompare(b.alias)
   })
@@ -128,7 +132,7 @@ onMounted(async () => {
 
     <n-collapse
       v-else
-      :default-expanded-names="sortedHosts.filter((h) => isEnabled(h.alias)).map((h) => h.alias)"
+      :default-expanded-names="sortedHosts.filter((h) => h.enabled).map((h) => h.alias)"
     >
       <n-collapse-item
         v-for="h in sortedHosts"
@@ -141,12 +145,12 @@ onMounted(async () => {
             <n-text depth="3" style="font-size: 12px">
               {{ h.user }}@{{ h.host_name }}:{{ h.port }}
             </n-text>
-            <n-tag :type="connLabel(h.alias).type" size="small" round>
-              {{ connLabel(h.alias).label }}
+            <n-tag :type="connLabel(h).type" size="small" round>
+              {{ connLabel(h).label }}
             </n-tag>
             <n-text style="font-size: 12px">{{ zh.hosts.monitor }}</n-text>
             <n-switch
-              :value="isEnabled(h.alias)"
+              :value="h.enabled"
               size="small"
               @update:value="(v: boolean) => onToggleHost(h.alias, v)"
             />
@@ -158,22 +162,22 @@ onMounted(async () => {
 
         <n-space vertical :size="8">
           <n-alert
-            v-if="connError(h.alias)"
+            v-if="connError(h)"
             type="warning"
             :show-icon="false"
             style="font-size: 12px"
           >
-            {{ connError(h.alias) }}
+            {{ connError(h) }}
             <br />
             <n-text depth="3" style="font-size: 11px">
               {{ zh.monitor.hostKeyTip.replace('{alias}', h.alias) }}
             </n-text>
           </n-alert>
 
-          <template v-if="isEnabled(h.alias)">
+          <template v-if="h.enabled">
             <port-table
-              v-if="forwardsOf(h.alias).length > 0"
-              :data="forwardsOf(h.alias)"
+              v-if="store.forwardsByAlias(h.alias).length > 0"
+              :data="store.forwardsByAlias(h.alias)"
               @toggle="onTogglePort"
             />
             <n-empty

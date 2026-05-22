@@ -6,7 +6,7 @@ import type { Forward } from '../types'
 import StatusTag from './StatusTag.vue'
 import { zh } from '../i18n/zh'
 
-const props = defineProps<{ data: Forward[] }>()
+const props = defineProps<{ data: ReadonlyArray<Forward> }>()
 const emit = defineEmits<{ toggle: [serverId: string, port: number, on: boolean] }>()
 
 function fmtBind(f: Forward): string {
@@ -102,11 +102,15 @@ const columns = computed<DataTableColumns<Forward>>(() => [
 ])
 
 const rowKey = (row: Forward) => `${row.server_id}/${row.remote_port}`
+
+// NDataTable 的 :data 类型是 RowData[]（mutable）；上游传 ReadonlyArray<Forward>
+// 是为了让 selector 输出引用稳定。这里只 cast 类型，运行时仍是同一引用。
+const tableData = computed(() => props.data as Forward[])
 </script>
 
 <template>
   <n-data-table
-    :data="props.data"
+    :data="tableData"
     :columns="columns"
     :row-key="rowKey"
     size="small"
