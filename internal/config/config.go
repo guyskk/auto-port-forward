@@ -12,14 +12,14 @@ import (
 
 // Span 表示一个端口范围（闭区间）。
 type Span struct {
-	Lo int `toml:"lo"`
-	Hi int `toml:"hi"`
+	Lo int `toml:"lo" json:"lo"`
+	Hi int `toml:"hi" json:"hi"`
 }
 
 // Rules 控制扫描端口的筛选策略。
 type Rules struct {
-	ExcludePorts  []int  `toml:"exclude_ports"`
-	ExcludeRanges []Span `toml:"exclude_ranges"`
+	ExcludePorts  []int  `toml:"exclude_ports" json:"exclude_ports"`
+	ExcludeRanges []Span `toml:"exclude_ranges" json:"exclude_ranges"`
 }
 
 // Config 是顶层配置结构。
@@ -27,9 +27,9 @@ type Rules struct {
 // EnabledHosts 是启用监控的 SSH config 别名集合：
 // 即使该别名当前已从 ssh config 移除，也保留状态，同名再现时自动恢复。
 type Config struct {
-	ScanIntervalSec int      `toml:"scan_interval_sec"`
-	Rules           Rules    `toml:"rules"`
-	EnabledHosts    []string `toml:"enabled_hosts"`
+	ScanIntervalSec int      `toml:"scan_interval_sec" json:"scan_interval_sec"`
+	Rules           Rules    `toml:"rules" json:"rules"`
+	EnabledHosts    []string `toml:"enabled_hosts" json:"enabled_hosts"`
 }
 
 // DefaultConfig 返回带默认值的 Config。
