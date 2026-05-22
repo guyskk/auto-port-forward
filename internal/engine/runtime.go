@@ -82,11 +82,20 @@ func (e *Engine) scanServer(ctx context.Context, st *serverState, local []model.
 	}
 	st.mu.Unlock()
 
+	// 取该 host 的用户禁用端口集合（cfg 由 ToggleForward / 启动时 store snapshot 维护）。
+	e.mu.Lock()
+	disabled := make(map[int]bool, len(e.cfg.DisabledPorts[st.cfg.Alias]))
+	for _, p := range e.cfg.DisabledPorts[st.cfg.Alias] {
+		disabled[p] = true
+	}
+	e.mu.Unlock()
+
 	in := Inputs{
 		ServerID:       st.cfg.Alias,
 		Remote:         remote,
 		LocalOccupied:  occupied,
 		CurrentForward: currentMap,
+		DisabledPorts:  disabled,
 		Rules:          e.cfg.Rules,
 		IsRoot:         e.deps.IsRoot,
 	}

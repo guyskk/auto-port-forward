@@ -48,6 +48,28 @@ func TestStore_Snapshot_neverHasNilSlices(t *testing.T) {
 	if snap.Rules.ExcludeRanges == nil {
 		t.Errorf("Snapshot.Rules.ExcludeRanges is nil; want []Span{}")
 	}
+	if snap.DisabledPorts == nil {
+		t.Errorf("Snapshot.DisabledPorts is nil; want map[string][]int{}")
+	}
+}
+
+// DisabledPorts 字段 nil map 必须 marshal 为 `{}` 而非 `null`，前端可以无脑
+// `disabledPorts[alias]` 取值。
+func TestStore_DisabledPorts_nilMapMarshalsAsEmptyJSONObject(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	snap := s.Snapshot()
+	b, err := json.Marshal(snap.DisabledPorts)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if string(b) != "{}" {
+		t.Errorf("DisabledPorts JSON = %s, want {}", b)
+	}
 }
 
 // 前端 types.ts 期望字段名为 lowercase + underscore（scan_interval_sec / rules /

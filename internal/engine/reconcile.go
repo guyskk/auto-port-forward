@@ -18,6 +18,7 @@ type Inputs struct {
 	Remote         []model.RemotePort     // 本轮扫到的远端 LISTEN 端口
 	LocalOccupied  map[int]LocalOwnership // local port → 占用情况
 	CurrentForward map[int]bool           // remote port → 是否已有 forward 正在跑
+	DisabledPorts  map[int]bool           // remote port → 用户是否明确禁用（优先级最高）
 	Rules          config.Rules
 	IsRoot         bool
 }
@@ -40,6 +41,17 @@ func Reconcile(in Inputs) Outputs {
 	desiredSet := make(map[int]struct{})
 
 	for _, r := range dedupRemote(in.Remote) {
+		// 用户明确禁用 → 状态为 excluded，不进 DesiredPorts；优先级最高（覆盖 conflict / running 等）。
+		if in.DisabledPorts[r.Port] {
+			out.Snapshot = append(out.Snapshot, model.Forward{
+				ServerID:   in.ServerID,
+				RemotePort: r.Port,
+				LocalPort:  r.Port,
+				Status:     model.StatusExcluded,
+				Remote:     r,
+			})
+			continue
+		}
 		localPort := r.Port
 		own := in.LocalOccupied[localPort]
 		// 端口已经在跑 → 视为 forwarding，且占用就是自己 — 此时 LocalOccupied 标记可能不准，强制 BySelf。
